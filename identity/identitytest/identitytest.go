@@ -1,0 +1,168 @@
+// Package identitytest provides a local fake Rauthy for application tests, so
+// sign-in, sessions, CSRF, and bearer routes can be tested without a live provider.
+package identitytest
+
+import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	jose "github.com/go-jose/go-jose/v4"
+)
+
+// User is the person the fake provider signs in.
+type User struct {
+	Subject string
+	Email   string
+	Groups  []string
+}
+
+// Provider is a fake OIDC provider. Use Issuer and ClientID in the application's
+// identity configuration; any client secret is accepted.
+type Provider struct {
+	Issuer   string
+	ClientID string
+	key      *rsa.PrivateKey
+	mu       sync.Mutex
+	codes    map[string]pendingLogin
+}
+
+type pendingLogin struct {
+	user             User
+	nonce, challenge string
+	sid              string
+}
+
+// NewProvider starts a fake provider that stops when the test ends.
+func NewProvider(t testing.TB) *Provider {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &Provider{ClientID: "appkit-test", key: key, codes: make(map[string]pendingLogin)}
+	server := httptest.NewServer(http.HandlerFunc(provider.serve))
+	t.Cleanup(server.Close)
+	provider.Issuer = server.URL
+	return provider
+}
+
+func (provider *Provider) serve(writer http.ResponseWriter, request *http.Request) {
+	writer.Header().Set("Content-Type", "application/json")
+	switch request.URL.Path {
+	case "/.well-known/openid-configuration":
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"issuer": provider.Issuer, "authorization_endpoint": provider.Issuer + "/authorize", "token_endpoint": provider.Issuer + "/token",
+			"jwks_uri": provider.Issuer + "/keys", "id_token_signing_alg_values_supported": []string{"RS256"}, "backchannel_logout_supported": true,
+		})
+	case "/keys":
+		_ = json.NewEncoder(writer).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &provider.key.PublicKey, KeyID: "test", Algorithm: "RS256", Use: "sig"}}})
+	case "/token":
+		_ = request.ParseForm()
+		provider.mu.Lock()
+		login, ok := provider.codes[request.Form.Get("code")]
+		delete(provider.codes, request.Form.Get("code"))
+		provider.mu.Unlock()
+		verifier := sha256.Sum256([]byte(request.Form.Get("code_verifier")))
+		if !ok || request.Form.Get("client_id") != provider.ClientID || base64.RawURLEncoding.EncodeToString(verifier[:]) != login.challenge {
+			http.Error(writer, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+			return
+		}
+		access, err := provider.token("at+jwt", provider.claims(login.user))
+		if err != nil {
+			http.Error(writer, `{"error":"server_error"}`, http.StatusInternalServerError)
+			return
+		}
+		hash := sha256.Sum256([]byte(access))
+		claims := provider.claims(login.user)
+		claims["nonce"], claims["sid"], claims["at_hash"] = login.nonce, login.sid, base64.RawURLEncoding.EncodeToString(hash[:16])
+		id, err := provider.token("JWT", claims)
+		if err != nil {
+			http.Error(writer, `{"error":"server_error"}`, http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{"access_token": access, "id_token": id, "token_type": "Bearer", "expires_in": 3600})
+	default:
+		http.NotFound(writer, request)
+	}
+}
+
+func (provider *Provider) claims(user User) map[string]any {
+	now := time.Now().Unix()
+	return map[string]any{"iss": provider.Issuer, "aud": provider.ClientID, "sub": user.Subject, "email": user.Email, "groups": user.Groups, "iat": now, "exp": now + 3600}
+}
+
+func (provider *Provider) token(tokenType string, claims map[string]any) (string, error) {
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: provider.key}, (&jose.SignerOptions{}).WithType(jose.ContentType(tokenType)).WithHeader("kid", "test"))
+	if err != nil {
+		return "", err
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	signed, err := signer.Sign(payload)
+	if err != nil {
+		return "", err
+	}
+	return signed.CompactSerialize()
+}
+
+// AccessToken returns a bearer access token for user, accepted by bearer routes.
+func (provider *Provider) AccessToken(t testing.TB, user User) string {
+	t.Helper()
+	token, err := provider.token("at+jwt", provider.claims(user))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
+// SignIn runs the real browser sign-in flow against the application at appURL,
+// which must match its configured origin, and returns the session cookie.
+func (provider *Provider) SignIn(t testing.TB, appURL string, user User) *http.Cookie {
+	t.Helper()
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	response, err := client.Get(strings.TrimSuffix(appURL, "/") + "/auth/login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	location, err := url.Parse(response.Header.Get("Location"))
+	if err != nil || response.StatusCode != http.StatusSeeOther || !strings.HasPrefix(location.String(), provider.Issuer+"/authorize") {
+		t.Fatalf("identitytest: /auth/login did not redirect to the fake provider (status %d)", response.StatusCode)
+	}
+	query := location.Query()
+	code := rand.Text()
+	provider.mu.Lock()
+	provider.codes[code] = pendingLogin{user: user, nonce: query.Get("nonce"), challenge: query.Get("code_challenge"), sid: rand.Text()}
+	provider.mu.Unlock()
+	callback, err := http.NewRequest(http.MethodGet, query.Get("redirect_uri")+"?"+url.Values{"state": {query.Get("state")}, "code": {code}}.Encode(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cookie := range response.Cookies() {
+		callback.AddCookie(cookie)
+	}
+	response, err = client.Do(callback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	for _, cookie := range response.Cookies() {
+		if cookie.Value != "" && !strings.HasSuffix(cookie.Name, "_login") {
+			return cookie
+		}
+	}
+	t.Fatalf("identitytest: sign-in failed (callback status %d)", response.StatusCode)
+	return nil
+}

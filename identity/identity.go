@@ -1,0 +1,76 @@
+// Package identity authenticates actors using Rauthy as an OpenID Connect provider.
+package identity
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"slices"
+	"time"
+)
+
+// Identity is the authenticated person on a request: the provider's claims plus
+// the permissions the application's policy grants their groups, resolved once
+// when the identity is attached. Subject is the provider's canonical OIDC sub,
+// never an email address.
+type Identity struct {
+	Subject     string   `json:"subject"`
+	Email       string   `json:"email,omitempty"`
+	Groups      []string `json:"groups,omitempty"`
+	Roles       []string `json:"roles,omitempty"`
+	Permissions []string `json:"-"` // resolved per request, never stored or sent as part of the identity
+	expiresAt   time.Time
+}
+
+// Can reports whether the identity holds permission.
+func (actor Identity) Can(permission string) bool {
+	return slices.Contains(actor.Permissions, permission)
+}
+
+type contextKey struct{}
+
+// WithContext attaches an already authenticated identity. It does not authenticate.
+func WithContext(ctx context.Context, actor Identity) context.Context {
+	actor.Groups = append([]string(nil), actor.Groups...)
+	actor.Roles = append([]string(nil), actor.Roles...)
+	actor.Permissions = append([]string(nil), actor.Permissions...)
+	return context.WithValue(ctx, contextKey{}, actor)
+}
+
+func FromContext(ctx context.Context) (Identity, bool) {
+	actor, ok := ctx.Value(contextKey{}).(Identity)
+	actor.Groups = append([]string(nil), actor.Groups...)
+	actor.Roles = append([]string(nil), actor.Roles...)
+	actor.Permissions = append([]string(nil), actor.Permissions...)
+	return actor, ok && actor.Subject != ""
+}
+
+// RequirePermission passes a request on only when its authenticated identity
+// holds permission: 401 without an identity, 403 without the permission.
+// Wrap it inside Require, Optional, or Bearer, which attach the permissions.
+func RequirePermission(permission string, next http.Handler) http.Handler {
+	if permission == "" || next == nil {
+		panic("identity: RequirePermission needs a permission and handler")
+	}
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		person, ok := FromContext(request.Context())
+		if !ok {
+			writeError(writer, http.StatusUnauthorized, "Sign in required.")
+			return
+		}
+		if !person.Can(permission) {
+			writeError(writer, http.StatusForbidden, "You don't have permission for this.")
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
+}
+
+// writeError answers API and WebSocket requests with {"error": message}, the
+// shape applications use, so pages read every error the same way.
+func writeError(writer http.ResponseWriter, status int, message string) {
+	writer.Header().Set("Content-Type", "application/json")
+	writer.Header().Set("X-Content-Type-Options", "nosniff")
+	writer.WriteHeader(status)
+	_ = json.NewEncoder(writer).Encode(map[string]string{"error": message})
+}
