@@ -3,8 +3,7 @@
 Small Go infrastructure building blocks and an explicit application architecture standard.
 AppKit does not own your application: `main.go` constructs dependencies, mounts routes, and controls lifecycle.
 
-The module uses this repository's actual path, `github.com/Ovi1kanobe/appkit`.
-Import only the packages you need; there is no root package or global initialization.
+Import the packages you need from `github.com/Ovi1kanobe/appkit`; there is no root package or global initialization.
 Requires Go 1.26 or newer.
 
 | Package | Owns |
@@ -18,18 +17,38 @@ Requires Go 1.26 or newer.
 | `schema` | Opens the application database with AppKit's SQLite settings; embedded migrations applied per system and refused on a newer database |
 | `selfupdate` | The build's version from its git tag, and replacement of the running binary with a verified newer GitHub release |
 
-## Browser sessions
+## Start an application
 
-Sign-in has been verified against a live Rauthy deployment.
-Back-channel logout has not yet been verified against a live Rauthy, because it needs the app reachable from the Rauthy server.
-Local security tests cover the full flow, including back-channel logout.
+Copy `examples/starter`, the empty app every app begins as.
+`examples/minimal` is a small complete app; fill in its `.env` from `.env.example` and run `make -C examples/minimal dev`.
+
+Declare every environment variable through `config`, then call `Check` once so startup reports all missing or invalid values together.
 
 ```go
 environment := config.New()
-appKit := environment.AppKit(config.Defaults{}) // every AppKit variable: Rauthy, APP_ORIGIN, APP_MASTER_KEY, ...
+appKit := environment.AppKit(config.Defaults{}) // every AppKit variable
 if err := environment.Check(); err != nil {
     log.Fatal(err) // lists every missing or invalid variable; in development, logs each default in use
 }
+```
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `RAUTHY_ISSUER` | yes | Rauthy issuer URL exactly as Rauthy reports it, including any trailing slash |
+| `RAUTHY_CLIENT_ID` | yes | Rauthy client ID |
+| `RAUTHY_CLIENT_SECRET` | confidential clients | Rauthy client secret |
+| `APP_ORIGIN` | yes | Public origin users open, such as `https://app.example.com` or `http://localhost:8080` |
+| `APP_MASTER_KEY` | yes | Base64 key that encrypts stored credentials; create with `openssl rand -base64 32` |
+| `APP_ENV` | no, default `production` | `development` serves the frontend from disk and logs each default in use |
+| `LISTEN_ADDRESS` | no, default `127.0.0.1:8080` | Address the server listens on |
+| `DATABASE_PATH` | no, default `app.sqlite` | Application database file |
+| `SESSION_DATABASE` | no, default `appkit-sessions.sqlite` | AppKit session database file |
+
+Environment variables hold deployment values and secrets only; everything else, including roles and permissions, belongs in code.
+
+## Browser sessions
+
+```go
 sessionConfig := appKit.Sessions
 sessionConfig.Policy = policy // application-owned authz rules
 sessions, err := identity.NewSessions(ctx, sessionConfig)
@@ -44,9 +63,10 @@ mux.Handle("GET /api/status", sessions.Bearer(identity.RequirePermission("diagno
 
 `Require` redirects signed-out HTML navigation to Rauthy and returns 401 for API/WebSocket requests.
 API and WebSocket errors from AppKit use the same `{"error": "..."}` body as applications.
-`Require`, `Optional`, and `Bearer` attach the identity with `Permissions` resolved from its groups by the configured policy, never stored; `identity.RequirePermission` answers 401 without an identity and 403 when `Identity.Can` is false, and resource-level rules in `api/access` use the same `Can`.
+`Require`, `Optional`, and `Bearer` attach the identity with `Permissions` resolved from its groups by the configured policy, never stored.
+`identity.RequirePermission` answers 401 without an identity and 403 when `Identity.Can` is false; resource-level rules in the application use the same `Can`.
 Browser middleware ignores bearer credentials; bearer middleware ignores cookies.
-Bearer-only apps can continue using `identity.New` and `Verifier.Middleware` without any SQLite dependency; that identity carries no permissions.
+Bearer-only apps can use `identity.New` and `Verifier.Middleware` without any SQLite dependency; that identity carries no permissions.
 
 Sign-in is `<a href="/auth/login">Sign in</a>`.
 Sign-out is `<form method="post" action="/auth/logout"><button>Sign out</button></form>`.
@@ -57,7 +77,7 @@ AppKit owns `/auth/login`, `/auth/callback`, `/auth/logout`, `/auth/backchannel`
 The session endpoint returns `{ "user": null, "permissions": [] }` when signed out, otherwise the identity and permissions resolved through the application's policy.
 `SessionConfig.AppInfo`, when set, adds its result to that body as `app`, so pages get display names, preferences, or other per-person state in the same request.
 The event stream emits `signed-out` when the session ends.
-The example single-page app reads `/auth/session` for its state and listens to `/auth/events` to switch to signed out immediately.
+A single-page app reads `/auth/session` for its state and listens to `/auth/events` to switch to signed out immediately.
 
 Sessions default to eight hours, fixed from sign-in.
 Set `Lifetime` to change this.
@@ -67,7 +87,7 @@ A person with none of the application's groups is refused at sign-in and gets no
 For urgent removal, end the person's session in Rauthy.
 There is no SCIM, and a refresh token, if Rauthy issues one, is discarded unused.
 
-Only opaque session cookies reach the application browser; provider tokens stay on the server.
+Only opaque session cookies reach the browser; provider tokens stay on the server.
 Cookies are HttpOnly, SameSite=Lax, and Secure with the `__Host-` prefix on HTTPS.
 HTTP is allowed only on localhost/loopback.
 Only cookie hashes are stored in SQLite.
@@ -87,7 +107,6 @@ Do not add permissive CORS or log callback query strings/credentials in proxies.
 
 Back-channel notifications with `sid` end matching sessions only (and match `sub` too when supplied).
 Subject-only notifications end all that user's sessions.
-Rauthy may send subject-only notifications as a fallback; AppKit deliberately does not distinguish those from global logout.
 Replays are harmless, and durable logout records prevent racing callbacks from admitting revoked sessions.
 Revocation/expiry cancels live request contexts and closes AppKit WebSockets with close code `4401` (`realtime.AuthenticationEnded`), so pages can tell it apart from a network drop.
 Custom streaming handlers must honor their request contexts.
@@ -107,12 +126,6 @@ The app's Rauthy client, public or confidential, has `authorization_code`, PKCE 
 Its redirect URI is exactly `<APP_ORIGIN>/auth/callback` and its back-channel logout URI is `<APP_ORIGIN>/auth/backchannel`, which Rauthy must be able to reach; wildcards are unnecessary.
 A short token lifetime bounds how long bearer clients keep access after logout.
 Access is granted through Rauthy groups named after the app, such as `example-members`; no SCIM setup is needed.
-
-`examples/starter` is the empty app every app begins as, and the example in `examples/minimal` is a small complete app that runs with `make -C examples/minimal dev` once its `.env` is filled in from `.env.example`.
-It is a separate module, so the root `./...` skips it; `make -C examples/minimal test` checks it.
-AppKit's session security tests in `identity` use local provider fixtures and cover session persistence and locking, callback validation, sign-in without a role, CSRF, credential separation, logout races and replays, expiry notifications, and socket closure.
-
-Provider details: [Rauthy v0.37.1 logout](https://github.com/sebadob/rauthy/blob/v0.37.1/src/service/src/oidc/logout.rs), [token lifetime](https://github.com/sebadob/rauthy/blob/v0.37.1/src/service/src/token_set.rs), [localhost redirect validation](https://github.com/sebadob/rauthy/blob/v0.37.1/src/data/src/entity/clients.rs).
 
 ## Test an application
 
@@ -167,7 +180,7 @@ A failed update leaves the current binary untouched, and a successful one never 
 A token is sent only to the GitHub API, never to the host that serves downloads.
 Apps expose these as `version` and `update` commands.
 
-## Authorization and provisioning
+## Authorization
 
 ```go
 policy, err := authz.New(
@@ -183,8 +196,7 @@ if viewer.Can("bots.write") { /* viewer is the identity.Identity from the reques
 
 Multiple groups/roles union permissions; unknown groups grant nothing; roles and permissions are returned in sorted order.
 `policy.Resolve(groups, localRoles...)` returns an `authz.Actor` directly, and also accepts trusted application-owned role assignments, never unvalidated request values.
-The read and write rules in `api/access` still decide which bots a builder sees and starts; `bots.all.read` is how a role sees every bot.
-Roles and permission definitions belong in code, not environment variables.
+Permissions say what a role may do; the application's own resource rules decide which records that applies to.
 Rauthy groups are shared by every application, so start each group name with the application name (`notes-admins`, `billing-admins`).
 
 Applications keep their own profile of each person, keyed by `Identity.Subject` and refreshed through `SessionConfig.AppInfo`.
@@ -209,17 +221,3 @@ PWA files such as `manifest.webmanifest` and `sw.js` are ordinary root assets, s
 A service worker must never cache or answer backend namespaces, and `index.html` is sent with `Cache-Control: no-cache` so updates are seen.
 Use an embedded, trusted filesystem; arbitrary filesystem adapters can have their own symlink semantics.
 The package adds no router, CORS policy, or frontend toolchain.
-
-## External dependencies
-
-All versions are pinned in `go.mod`/`go.sum`.
-
-| Module | Version | Reason |
-| --- | --- | --- |
-| `github.com/coreos/go-oidc/v3` | v3.21.0 | Established OIDC discovery, signature/claim verification, cached remote JWKS |
-| `github.com/coder/websocket` | v1.8.15 | WebSocket protocol, origin checks, concurrency-safe writes, ping/pong and connection handling |
-| `github.com/go-jose/go-jose/v4` | v4.1.5 | Required by go-oidc for JOSE cryptography; also directly used to sign local test fixtures |
-| `golang.org/x/oauth2` | v0.37.0 | Required indirectly by go-oidc for OAuth endpoint/client support |
-| `modernc.org/sqlite` | v1.60.1 | Pure-Go SQLite for sessions and the application database; no C compiler needed |
-AppKit itself adds no router or frontend framework.
-Each app pins current frontend versions in its own lockfile.
