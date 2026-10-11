@@ -9,7 +9,7 @@ import (
 )
 
 func TestFrontend(t *testing.T) {
-	files := fstest.MapFS{"index.html": {Data: []byte("<h1>App</h1>")}, "assets/app.js": {Data: []byte("console.log('app')")}, "assets/extensionless": {Data: []byte("asset")}}
+	files := fstest.MapFS{"index.html": {Data: []byte("<h1>App</h1>")}, "assets/app.js": {Data: []byte("console.log('app')")}, "assets/extensionless": {Data: []byte("asset")}, "manifest.webmanifest": {Data: []byte("{}")}}
 	handler, err := New(files)
 	if err != nil {
 		t.Fatal(err)
@@ -41,6 +41,11 @@ func TestFrontend(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest("POST", "/bots/123", nil))
 	if response.Code != 405 {
 		t.Fatal("POST served SPA")
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("GET", "/manifest.webmanifest", nil))
+	if response.Code != 200 || response.Header().Get("Content-Type") != "application/manifest+json" {
+		t.Fatalf("manifest status=%d type=%q", response.Code, response.Header().Get("Content-Type"))
 	}
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest("HEAD", "/bots/123", nil))

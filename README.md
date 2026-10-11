@@ -217,7 +217,7 @@ Files are read per request, so `os.DirFS` serves edits immediately in developmen
 Backend namespaces never receive the SPA fallback, even when their route is missing.
 Existing assets are served directly; missing `/assets/*` paths or paths with file extensions return 404.
 Extensionless paths are SPA routes, so put extensionless static assets under `/assets`.
-PWA files such as `manifest.webmanifest` and `sw.js` are ordinary root assets, so no AppKit support is needed.
+PWA files such as `manifest.webmanifest` and `sw.js` are ordinary root assets; `.webmanifest` is served as `application/manifest+json`, since Go has no type for it.
 A service worker must never cache or answer backend namespaces, and `index.html` is sent with `Cache-Control: no-cache` so updates are seen.
 Use an embedded, trusted filesystem; arbitrary filesystem adapters can have their own symlink semantics.
 The package adds no router, CORS policy, or frontend toolchain.

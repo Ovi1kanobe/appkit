@@ -47,6 +47,10 @@ func New(files fs.FS) (http.Handler, error) {
 		}
 		data, readErr := fs.ReadFile(files, name)
 		if readErr == nil {
+			// Go has no built-in type for web app manifests.
+			if path.Ext(name) == ".webmanifest" {
+				writer.Header().Set("Content-Type", "application/manifest+json")
+			}
 			http.ServeContent(writer, request, name, time.Time{}, bytes.NewReader(data))
 			return
 		}
