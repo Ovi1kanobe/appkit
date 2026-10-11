@@ -179,6 +179,12 @@ An app is one process listening on loopback behind a TLS reverse proxy, with `AP
 A failed update leaves the current binary untouched, and a successful one never restarts the process.
 A token is sent only to the GitHub API, never to the host that serves downloads.
 Apps expose these as `version` and `update` commands.
+For a private repository, `update` needs a GitHub token with read-only Contents access to that repository, from `--token` or `GITHUB_TOKEN`.
+Keep it out of the app's environment file, which only the service reads; store it in a root-only file and read it when updating, so it never appears in a command line:
+
+```sh
+sudo sh -c 'GITHUB_TOKEN=$(cat /etc/<app>/github-token) /opt/<app>/<app> update' && sudo systemctl restart <app>
+```
 
 ## Authorization
 
