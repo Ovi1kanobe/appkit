@@ -38,11 +38,11 @@ type Publisher[K comparable, C any] struct {
 // NewPublisher makes a publisher for topic. key says which item a change is
 // about. view runs once per change sent and returns the View each subscriber
 // is asked through; work shared by every subscriber, such as a lookup, belongs
-// in view itself, and work that depends on the person in the View. A nil View
-// and a nil error mean there is nothing to send, such as an item that no
-// longer exists. An error means try again later, so return one only for a
-// failure that can pass, such as a busy database; a permanent one would be
-// retried and logged every second for as long as the process runs.
+// in view itself, and work that depends on the person in the View. An error
+// means try again later, so return one only for a failure that can pass, such
+// as a busy database; a permanent one would be retried and logged every second
+// for as long as the process runs. An item that no longer exists is not an
+// error: return a View that sends its removal. A nil View sends nothing at all.
 func NewPublisher[K comparable, C any](hub *Hub, topic string, key func(C) K, view func(ctx context.Context, change C) (View, error)) *Publisher[K, C] {
 	return &Publisher[K, C]{hub: hub, topic: topic, key: key, view: view, pending: map[K]C{}, signal: make(chan struct{}, 1)}
 }
