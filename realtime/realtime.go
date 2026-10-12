@@ -21,6 +21,10 @@ var errUnauthenticated = errors.New("realtime: unauthenticated")
 // it apart from a network drop.
 const AuthenticationEnded = 4401
 
+// View says what one person receives, or false to send them nothing. The
+// api/access read rules decide it, so each person sees only their own view.
+type View func(person identity.Identity) ([]byte, bool)
+
 // keepAlive is how often Keep pings a quiet socket.
 const keepAlive = 30 * time.Second
 
@@ -209,7 +213,7 @@ func (hub *Hub) Subscriber(topic string) http.Handler {
 // workers. Each write has its own five-second ceiling, and a socket that
 // misses it is closed, so one slow subscriber delays the others by at most
 // that once. A close concurrent with the snapshot may race with it.
-func (hub *Hub) PublishEach(ctx context.Context, topic string, view func(identity.Identity) ([]byte, bool)) error {
+func (hub *Hub) PublishEach(ctx context.Context, topic string, view View) error {
 	hub.mu.Lock()
 	connections := make([]*Conn, 0)
 	for connection, topics := range hub.connections {

@@ -214,7 +214,7 @@ func TestPublisher(t *testing.T) {
 	var viewed sync.Map       // subject -> how many changes the returned function saw
 	publisher := NewPublisher(&hub, "items.changed",
 		func(item change) int { return item.ID },
-		func(_ context.Context, item change) func(identity.Identity) ([]byte, bool) {
+		func(_ context.Context, item change) View {
 			prepared.Add(1)
 			message := []byte(strconv.Itoa(item.ID) + ":" + item.Text)
 			return func(person identity.Identity) ([]byte, bool) {

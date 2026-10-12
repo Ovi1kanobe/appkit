@@ -3,8 +3,6 @@ package realtime
 import (
 	"context"
 	"sync"
-
-	"github.com/Ovi1kanobe/appkit/identity"
 )
 
 // Publisher sends each subscriber of a topic their own view of every change a
@@ -21,7 +19,7 @@ type Publisher[K comparable, C any] struct {
 	hub     *Hub
 	topic   string
 	key     func(C) K
-	view    func(context.Context, C) func(identity.Identity) ([]byte, bool)
+	view    func(context.Context, C) View
 	mutex   sync.Mutex
 	merge   func(previous, next C) C
 	pending map[K]C
@@ -31,11 +29,11 @@ type Publisher[K comparable, C any] struct {
 }
 
 // NewPublisher makes a publisher for topic. key says which item a change is
-// about. view runs once per change sent and returns what each subscriber
-// receives for it, or false to send that person nothing; work shared by every
-// subscriber, such as a lookup, belongs in view itself, and work that depends
-// on the person in the function it returns. A nil function sends nothing.
-func NewPublisher[K comparable, C any](hub *Hub, topic string, key func(C) K, view func(ctx context.Context, change C) func(person identity.Identity) ([]byte, bool)) *Publisher[K, C] {
+// about. view runs once per change sent and returns the View each subscriber
+// is asked through; work shared by every subscriber, such as a lookup, belongs
+// in view itself, and work that depends on the person in the View. A nil View
+// sends nothing.
+func NewPublisher[K comparable, C any](hub *Hub, topic string, key func(C) K, view func(ctx context.Context, change C) View) *Publisher[K, C] {
 	return &Publisher[K, C]{hub: hub, topic: topic, key: key, view: view, pending: map[K]C{}, signal: make(chan struct{}, 1)}
 }
 
