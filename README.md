@@ -10,7 +10,7 @@ Requires Go 1.26 or newer.
 | --- | --- |
 | `identity` | OIDC discovery, cached JWKS verification, bearer authentication, browser sessions, context identity, back-channel logout |
 | `authz` | External group to application role to permission mapping |
-| `realtime` | Authenticated WebSocket connections, subscriptions, safe writes, cleanup |
+| `realtime` | Authenticated WebSocket connections, subscriptions, safe writes, a coalescing publisher, cleanup |
 | `frontend` | Embedded asset serving and conservative SPA fallback |
 | `config` | Declared environment variables, reported all at once when missing or invalid |
 | `encryption` | AES-256-GCM encryption of stored credentials with the application's master key |
@@ -210,11 +210,12 @@ Applications keep their own profile of each person, keyed by `Identity.Subject` 
 ## Realtime and frontend
 
 `Hub` is a local connection registry with no hidden workers or message queues.
-Applications call `Accept`, defer `Conn.Close`, keep one read loop active, and authorize topics before subscribing.
-Concurrent writes are safe; writes/pings have a five-second ceiling, and failure removes the connection.
-Call `Ping` only while a read loop is active.
-`Publish` writes sequentially to a subscriber snapshot; give it a total deadline and coalesce upstream when appropriate.
-`PublishEach` asks a function, once per subscriber, what that person receives, so each person gets only their own view; `Publish` sends everyone the same data.
+Applications call `Accept`, defer `Conn.Close`, authorize topics before `Subscribe`, and keep one read loop active.
+`Conn.Keep` is that loop for a socket that only listens: it discards what arrives and pings every thirty seconds, so a dead socket on a quiet topic is noticed.
+`Hub.Subscriber(topic)` is the whole handler for such a socket; mount it behind the topic's permission.
+Concurrent writes are safe; writes and pings have a five-second ceiling, and failure removes the connection.
+`PublishEach` asks a function, once per subscriber, what that person receives, so each person gets only their own view; it writes sequentially to a subscriber snapshot, so give it a deadline.
+`Publisher` turns a system's changes into messages on one topic: pass its `Add` as the system's `onChange`, which never blocks and keeps the latest change per key in first-arrival order, merged by `Merge` when set, and start `Run`, which sends each subscriber their view of every pending change.
 It provides no durability, replay, ordering across concurrent publishers, or cross-process delivery.
 Apps explicitly call `Hub.Close` during shutdown because HTTP shutdown does not close upgraded sockets.
 

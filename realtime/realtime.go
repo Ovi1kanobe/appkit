@@ -21,8 +21,11 @@ var errUnauthenticated = errors.New("realtime: unauthenticated")
 // it apart from a network drop.
 const AuthenticationEnded = 4401
 
+// keepAlive is how often Keep pings a quiet socket.
+const keepAlive = 30 * time.Second
+
 // Hub tracks local connections and subscriptions. Its zero value is ready to use.
-// Applications own lifetime, topic authorization, and event scheduling/coalescing.
+// Applications own lifetime and topic authorization; Publisher coalesces changes.
 type Hub struct {
 	mu          sync.Mutex
 	connections map[*Conn]map[string]struct{}
@@ -107,8 +110,8 @@ func (connection *Conn) Write(ctx context.Context, data []byte) error {
 	return err
 }
 
-// Ping requires a concurrent Read loop to receive the pong.
-func (connection *Conn) Ping(ctx context.Context) error {
+// ping requires a concurrent Read loop to receive the pong.
+func (connection *Conn) ping(ctx context.Context) error {
 	pingContext, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	err := connection.socket.Ping(pingContext)
@@ -133,10 +136,31 @@ func (connection *Conn) Subscribe(topic string) error {
 	return nil
 }
 
-func (connection *Conn) Unsubscribe(topic string) {
-	connection.hub.mu.Lock()
-	defer connection.hub.mu.Unlock()
-	delete(connection.hub.connections[connection], topic)
+// Keep reads and discards incoming messages, and pings every keepAlive, until
+// ctx ends or the page leaves, so a dead socket is noticed on a quiet topic
+// and ping/pong keeps running. It is the read loop of a socket that only listens.
+func (connection *Conn) Keep(ctx context.Context) {
+	pingContext, stopPinging := context.WithCancel(ctx)
+	defer stopPinging()
+	go func() {
+		ticker := time.NewTicker(keepAlive)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pingContext.Done():
+				return
+			case <-ticker.C:
+				if connection.ping(pingContext) != nil {
+					return
+				}
+			}
+		}
+	}()
+	for {
+		if _, err := connection.Read(ctx); err != nil {
+			return
+		}
+	}
 }
 
 // Close immediately releases the socket and all subscriptions. It is idempotent.
@@ -159,9 +183,20 @@ func (connection *Conn) release(authenticationEnded bool) {
 	})
 }
 
-// Publish sends the same data to every subscriber of topic.
-func (hub *Hub) Publish(ctx context.Context, topic string, data []byte) error {
-	return hub.PublishEach(ctx, topic, func(identity.Identity) ([]byte, bool) { return data, true })
+// Subscriber is a handler that accepts a socket, subscribes it to topic, and
+// keeps it until the page leaves. Authorize the topic on the route first.
+func (hub *Hub) Subscriber(topic string) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		connection, err := hub.Accept(writer, request)
+		if err != nil {
+			return
+		}
+		defer connection.Close()
+		if err := connection.Subscribe(topic); err != nil {
+			return
+		}
+		connection.Keep(request.Context())
+	})
 }
 
 // PublishEach asks view, once per subscriber of topic, what that person
@@ -192,22 +227,6 @@ func (hub *Hub) PublishEach(ctx context.Context, topic string, view func(identit
 		}
 	}
 	return errors.Join(failures...)
-}
-
-// DisconnectSubject affects current connections only. Applications must separately
-// invalidate local sessions or revoke credentials to prevent reconnection.
-func (hub *Hub) DisconnectSubject(subject string) {
-	hub.mu.Lock()
-	var connections []*Conn
-	for connection := range hub.connections {
-		if connection.actor.Subject == subject {
-			connections = append(connections, connection)
-		}
-	}
-	hub.mu.Unlock()
-	for _, connection := range connections {
-		connection.Close()
-	}
 }
 
 // Close stops accepting and releases all current connections. The application calls it.
