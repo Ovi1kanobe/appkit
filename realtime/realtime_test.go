@@ -265,4 +265,21 @@ func TestPublisher(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("Run did not stop")
 	}
+	// After Run, Add drops the change instead of keeping it forever.
+	publisher.Add(change{ID: 9, Text: "late", Owner: "owner"})
+	publisher.mutex.Lock()
+	kept := len(publisher.pending)
+	publisher.mutex.Unlock()
+	if kept != 0 {
+		t.Fatalf("kept %d changes after Run returned", kept)
+	}
+}
+
+func TestIdentityIsACopy(t *testing.T) {
+	connection := &Conn{actor: identity.Identity{Subject: "one", Groups: []string{"g"}, Roles: []string{"r"}, Permissions: []string{"notes.read"}}}
+	copied := connection.Identity()
+	copied.Groups[0], copied.Roles[0], copied.Permissions[0] = "x", "x", "x"
+	if connection.actor.Groups[0] != "g" || connection.actor.Roles[0] != "r" || !connection.actor.Can("notes.read") {
+		t.Fatal("Identity shared a slice with the connection")
+	}
 }

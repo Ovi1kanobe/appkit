@@ -12,7 +12,8 @@ import (
 // key until Run sends it, so a burst of changes to one item is one message and
 // no change is lost. Changes are sent in the order their keys first arrived.
 // A subscriber whose write takes longer than five seconds is closed, and its
-// page refetches when it reconnects, so one slow page never costs another a change.
+// page refetches when it reconnects, so one slow page delays the others by at
+// most that once and never costs them a change.
 //
 // C is the system's own Change type and K is what identifies the changed item,
 // so the system never imports this package: pass Add as its onChange.
@@ -26,6 +27,7 @@ type Publisher[K comparable, C any] struct {
 	pending map[K]C
 	order   []K
 	signal  chan struct{}
+	stopped bool
 }
 
 // NewPublisher makes a publisher for topic. key says which item a change is
@@ -45,10 +47,15 @@ func (publisher *Publisher[K, C]) Merge(merge func(previous, next C) C) {
 	publisher.mutex.Unlock()
 }
 
-// Add keeps change until Run sends it. It never blocks.
+// Add keeps change until Run sends it. It never blocks. After Run has
+// returned the change is dropped, since nothing would ever send it.
 func (publisher *Publisher[K, C]) Add(change C) {
 	key := publisher.key(change)
 	publisher.mutex.Lock()
+	if publisher.stopped {
+		publisher.mutex.Unlock()
+		return
+	}
 	previous, pending := publisher.pending[key]
 	if pending && publisher.merge != nil {
 		change = publisher.merge(previous, change)
@@ -65,8 +72,14 @@ func (publisher *Publisher[K, C]) Add(change C) {
 }
 
 // Run sends pending changes until ctx ends. Changes added after it returns
-// are kept but never sent.
+// are dropped.
 func (publisher *Publisher[K, C]) Run(ctx context.Context) {
+	defer func() {
+		publisher.mutex.Lock()
+		publisher.stopped = true
+		publisher.pending, publisher.order = nil, nil
+		publisher.mutex.Unlock()
+	}()
 	for {
 		select {
 		case <-ctx.Done():
