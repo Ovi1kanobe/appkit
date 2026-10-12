@@ -42,7 +42,8 @@ type Conn struct {
 
 // Accept requires an identity already authenticated by the application. The
 // underlying library enforces same-origin requests and permits non-browser clients.
-// The caller must defer Close and continuously Read to handle ping/pong and cleanup.
+// The caller must defer Close and keep reading, with Keep or its own Read loop,
+// so ping/pong and cleanup run.
 func (hub *Hub) Accept(writer http.ResponseWriter, request *http.Request) (*Conn, error) {
 	actor, ok := identity.FromContext(request.Context())
 	if !ok {
@@ -53,7 +54,7 @@ func (hub *Hub) Accept(writer http.ResponseWriter, request *http.Request) (*Conn
 	closed := hub.closed
 	hub.mu.Unlock()
 	if closed {
-		writeError(writer, http.StatusServiceUnavailable, "Shutting down")
+		writeError(writer, http.StatusServiceUnavailable, "Shutting down.")
 		return nil, ErrClosed
 	}
 	socket, err := websocket.Accept(writer, request, nil)
@@ -77,10 +78,13 @@ func (hub *Hub) Accept(writer http.ResponseWriter, request *http.Request) (*Conn
 	return connection, nil
 }
 
+// Identity is a copy of the person on the socket, so a caller cannot change
+// what later checks see.
 func (connection *Conn) Identity() identity.Identity {
 	actor := connection.actor
 	actor.Groups = append([]string(nil), actor.Groups...)
 	actor.Roles = append([]string(nil), actor.Roles...)
+	actor.Permissions = append([]string(nil), actor.Permissions...)
 	return actor
 }
 
@@ -202,8 +206,9 @@ func (hub *Hub) Subscriber(topic string) http.Handler {
 // PublishEach asks view, once per subscriber of topic, what that person
 // receives, and sends it; view returns false to send that person nothing.
 // It writes sequentially to a snapshot of subscribers with no hidden queues or
-// workers; supply a deadline for the total fanout budget. A concurrent
-// unsubscribe or close may race with the captured snapshot.
+// workers. Each write has its own five-second ceiling, and a socket that
+// misses it is closed, so one slow subscriber delays the others by at most
+// that once. A close concurrent with the snapshot may race with it.
 func (hub *Hub) PublishEach(ctx context.Context, topic string, view func(identity.Identity) ([]byte, bool)) error {
 	hub.mu.Lock()
 	connections := make([]*Conn, 0)
