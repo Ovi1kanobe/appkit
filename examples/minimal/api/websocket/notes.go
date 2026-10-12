@@ -2,7 +2,6 @@ package websocket
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 
 	"github.com/Ovi1kanobe/appkit/examples/minimal/api/access"
@@ -27,13 +26,12 @@ func Notes(hub *realtime.Hub) http.Handler {
 func NewNotesPublisher(hub *realtime.Hub, profiles *userprofiles.System) *realtime.Publisher[int64, notes.Change] {
 	return realtime.NewPublisher(hub, NotesTopic,
 		func(change notes.Change) int64 { return change.ID },
-		func(ctx context.Context, change notes.Change) realtime.View {
+		func(ctx context.Context, change notes.Change) (realtime.View, error) {
 			var author userprofiles.UserProfile // looked up once, not once per subscriber
 			if change.Note != nil {
 				authors, err := profiles.Lookup(ctx, []string{change.Note.AuthorSubject})
 				if err != nil {
-					slog.ErrorContext(ctx, "note author profile", "error", err)
-					return nil
+					return nil, err
 				}
 				author = authors[change.Note.AuthorSubject]
 			}
@@ -44,6 +42,6 @@ func NewNotesPublisher(hub *realtime.Hub, profiles *userprofiles.System) *realti
 					}
 				}
 				return marshal(map[string]any{"id": change.ID, "removed": true}, true)
-			}
+			}, nil
 		})
 }

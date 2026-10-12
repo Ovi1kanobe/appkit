@@ -37,6 +37,16 @@ func dial(t *testing.T, ctx context.Context, server *httptest.Server, subject st
 	return client
 }
 
+// subscribe dials a Subscriber and waits for Ready, after which no change is missed.
+func subscribe(t *testing.T, ctx context.Context, server *httptest.Server, subject string) *websocket.Conn {
+	t.Helper()
+	client := dial(t, ctx, server, subject)
+	if data := readText(t, ctx, client); data != Ready {
+		t.Fatalf("first message %q, expected Ready", data)
+	}
+	return client
+}
+
 func readText(t *testing.T, ctx context.Context, client *websocket.Conn) string {
 	t.Helper()
 	_, data, err := client.Read(ctx)
@@ -214,21 +224,21 @@ func TestPublisher(t *testing.T) {
 	var viewed sync.Map       // subject -> how many changes the returned function saw
 	publisher := NewPublisher(&hub, "items.changed",
 		func(item change) int { return item.ID },
-		func(_ context.Context, item change) View {
+		func(_ context.Context, item change) (View, error) {
 			prepared.Add(1)
 			message := []byte(strconv.Itoa(item.ID) + ":" + item.Text)
 			return func(person identity.Identity) ([]byte, bool) {
-				count, _ := viewed.LoadOrStore(person.Subject, new(int))
-				*count.(*int)++
-				return message, item.Owner == person.Subject
-			}
+				count, _ := viewed.LoadOrStore(person.Subject, new(atomic.Int32))
+				count.(*atomic.Int32).Add(1)
+				return message, item.Owner == "" || item.Owner == person.Subject
+			}, nil
 		})
 	publisher.Merge(func(previous, next change) change {
 		next.Text = previous.Text + "+" + next.Text
 		return next
 	})
-	owner := dial(t, ctx, server, "owner")
-	other := dial(t, ctx, server, "other")
+	owner := subscribe(t, ctx, server, "owner")
+	other := subscribe(t, ctx, server, "other")
 	// Added before Run: the latest per item is kept, merged, in first-arrival order.
 	publisher.Add(change{ID: 1, Text: "a", Owner: "owner"})
 	publisher.Add(change{ID: 2, Text: "b", Owner: "owner"})
@@ -250,13 +260,20 @@ func TestPublisher(t *testing.T) {
 	if data := readText(t, ctx, other); data != "1:e" {
 		t.Fatalf("other received %q", data)
 	}
-	if prepared.Load() != 4 {
+	// A change everyone sees: once both have it, every earlier send is done.
+	publisher.Add(change{ID: 4, Text: "f"})
+	for _, client := range []*websocket.Conn{owner, other} {
+		if data := readText(t, ctx, client); data != "4:f" {
+			t.Fatalf("received %q", data)
+		}
+	}
+	if prepared.Load() != 5 {
 		t.Fatalf("view ran %d times, expected once per change sent", prepared.Load())
 	}
 	for _, subject := range []string{"owner", "other"} {
 		count, _ := viewed.Load(subject)
-		if *count.(*int) != 4 {
-			t.Fatalf("%s viewed %d changes, expected 4", subject, *count.(*int))
+		if n := count.(*atomic.Int32).Load(); n != 5 {
+			t.Fatalf("%s viewed %d changes, expected 5", subject, n)
 		}
 	}
 	stop()
@@ -272,6 +289,35 @@ func TestPublisher(t *testing.T) {
 	publisher.mutex.Unlock()
 	if kept != 0 {
 		t.Fatalf("kept %d changes after Run returned", kept)
+	}
+}
+
+func TestPublisherRetriesFailedView(t *testing.T) {
+	var hub Hub
+	defer hub.Close()
+	server := httptest.NewServer(withSubject(hub.Subscriber("items.changed")))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var failures atomic.Int32
+	publisher := NewPublisher(&hub, "items.changed",
+		func(item change) int { return item.ID },
+		func(_ context.Context, item change) (View, error) {
+			if item.ID == 1 && failures.Add(1) == 1 {
+				return nil, errors.New("database busy")
+			}
+			message := []byte(strconv.Itoa(item.ID) + ":" + item.Text)
+			return func(identity.Identity) ([]byte, bool) { return message, true }, nil
+		})
+	client := subscribe(t, ctx, server, "one")
+	// Item 1 fails once, so item 2 arrives first and item 1 follows on the retry.
+	publisher.Add(change{ID: 1, Text: "a"})
+	publisher.Add(change{ID: 2, Text: "b"})
+	go publisher.Run(ctx)
+	for _, expected := range []string{"2:b", "1:a"} {
+		if data := readText(t, ctx, client); data != expected {
+			t.Fatalf("received %q, expected %q", data, expected)
+		}
 	}
 }
 
