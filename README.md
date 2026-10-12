@@ -214,9 +214,9 @@ Applications call `Accept`, defer `Conn.Close`, authorize topics before `Subscri
 `Conn.Keep` is that loop for a socket that only listens: it discards what arrives and pings every thirty seconds, so a dead socket on a quiet topic is noticed.
 `Hub.Subscriber(topic)` is the whole handler for such a socket; mount it behind the topic's permission.
 Concurrent writes are safe; writes and pings have a five-second ceiling, and failure removes the connection.
-`PublishEach` asks a function, once per subscriber, what that person receives, so each person gets only their own view; it writes sequentially to a subscriber snapshot, so give it a deadline.
+`PublishEach` asks a `View`, once per subscriber, what that person receives, so each person gets only their own view; it writes sequentially to a subscriber snapshot, and a write that misses its five-second ceiling closes that socket.
 `Publisher` turns a system's changes into messages on one topic: pass its `Add` as the system's `onChange`, which never blocks and keeps the latest change per key in first-arrival order, merged by `Merge` when set, and start `Run`, which sends each subscriber their view of every pending change.
-Its view function runs once per change and returns the per-person function, so a lookup every subscriber needs runs once, and a slow subscriber is closed by its own write ceiling rather than costing the others the change.
+Its view function runs once per change and returns the `View`, so a lookup every subscriber needs runs once, and a slow subscriber is closed by its own write ceiling rather than costing the others the change.
 It provides no durability, replay, ordering across concurrent publishers, or cross-process delivery.
 Apps explicitly call `Hub.Close` during shutdown because HTTP shutdown does not close upgraded sockets.
 

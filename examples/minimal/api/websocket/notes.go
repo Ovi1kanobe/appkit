@@ -27,7 +27,7 @@ func Notes(hub *realtime.Hub) http.Handler {
 func NewNotesPublisher(hub *realtime.Hub, profiles *userprofiles.System) *realtime.Publisher[int64, notes.Change] {
 	return realtime.NewPublisher(hub, NotesTopic,
 		func(change notes.Change) int64 { return change.ID },
-		func(ctx context.Context, change notes.Change) func(identity.Identity) ([]byte, bool) {
+		func(ctx context.Context, change notes.Change) realtime.View {
 			var author userprofiles.UserProfile // looked up once, not once per subscriber
 			if change.Note != nil {
 				authors, err := profiles.Lookup(ctx, []string{change.Note.AuthorSubject})

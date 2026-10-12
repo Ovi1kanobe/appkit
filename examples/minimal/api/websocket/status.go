@@ -16,7 +16,8 @@ import (
 const StatusPattern = "GET /ws/status"
 const StatusTopic = "status.updated"
 
-// Status streams diagnostics snapshots. Mount it behind access.DiagnosticsRead.
+// Status sends the page the viewer's snapshot when it opens, then the one
+// PublishStatus sends every five seconds. Mount it behind access.DiagnosticsRead.
 func Status(system *diagnostics.System, hub *realtime.Hub) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		connection, err := hub.Accept(writer, request)
@@ -27,30 +28,12 @@ func Status(system *diagnostics.System, hub *realtime.Hub) http.Handler {
 		if err := connection.Subscribe(StatusTopic); err != nil {
 			return
 		}
-		view, _ := access.ViewStatus(connection.Identity(), system.Snapshot())
-		data, err := json.Marshal(view)
-		if err != nil {
-			return
-		}
-		if connection.Write(request.Context(), data) != nil {
-			return
-		}
-		for {
-			message, err := connection.Read(request.Context())
-			if err != nil {
-				return
-			}
-			if string(message) != "snapshot" {
-				return
-			}
-			data, err := json.Marshal(system.Snapshot())
-			if err != nil {
-				return
-			}
+		if data, ok := marshal(access.ViewStatus(connection.Identity(), system.Snapshot())); ok {
 			if connection.Write(request.Context(), data) != nil {
 				return
 			}
 		}
+		connection.Keep(request.Context())
 	})
 }
 
@@ -73,12 +56,9 @@ func PublishStatus(ctx context.Context, hub *realtime.Hub, system *diagnostics.S
 	}
 }
 
-// publishEach sends each subscriber of topic what view returns for them,
-// giving up after one second.
-func publishEach(ctx context.Context, hub *realtime.Hub, topic string, view func(identity.Identity) ([]byte, bool)) {
-	publishContext, cancel := context.WithTimeout(ctx, time.Second)
-	defer cancel()
-	_ = hub.PublishEach(publishContext, topic, view)
+// publishEach sends each subscriber of topic what view returns for them.
+func publishEach(ctx context.Context, hub *realtime.Hub, topic string, view realtime.View) {
+	_ = hub.PublishEach(ctx, topic, view)
 }
 
 // marshal encodes value for a subscriber who may see it.
