@@ -25,10 +25,10 @@ func Email(hub *realtime.Hub) http.Handler {
 func NewEmailPublisher(hub *realtime.Hub) *realtime.Publisher[struct{}, email.Change] {
 	return realtime.NewPublisher(hub, EmailTopic,
 		func(email.Change) struct{} { return struct{}{} },
-		func(_ context.Context, change email.Change) realtime.View {
+		func(_ context.Context, change email.Change) (realtime.View, error) {
 			return func(person identity.Identity) ([]byte, bool) {
 				view, ok := access.ViewEmailKey(person, change.Status)
 				return marshal(view, ok)
-			}
+			}, nil
 		})
 }

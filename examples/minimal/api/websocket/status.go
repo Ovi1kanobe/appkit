@@ -28,6 +28,9 @@ func Status(system *diagnostics.System, hub *realtime.Hub) http.Handler {
 		if err := connection.Subscribe(StatusTopic); err != nil {
 			return
 		}
+		if connection.Write(request.Context(), []byte(realtime.Ready)) != nil {
+			return
+		}
 		if data, ok := marshal(access.ViewStatus(connection.Identity(), system.Snapshot())); ok {
 			if connection.Write(request.Context(), data) != nil {
 				return

@@ -2,13 +2,20 @@ package realtime
 
 import (
 	"context"
+	"log/slog"
 	"sync"
+	"time"
 )
+
+// retryAfter is how long Run waits before trying again a change whose view failed.
+const retryAfter = time.Second
 
 // Publisher sends each subscriber of a topic their own view of every change a
 // system reports. Add never blocks the caller and keeps the latest change per
 // key until Run sends it, so a burst of changes to one item is one message and
 // no change is lost. Changes are sent in the order their keys first arrived.
+// A change whose view fails, such as on a database error, is kept and tried
+// again after a second, unless a newer change for its key replaced it.
 // A subscriber whose write takes longer than five seconds is closed, and its
 // page refetches when it reconnects, so one slow page delays the others by at
 // most that once and never costs them a change.
@@ -19,7 +26,7 @@ type Publisher[K comparable, C any] struct {
 	hub     *Hub
 	topic   string
 	key     func(C) K
-	view    func(context.Context, C) View
+	view    func(context.Context, C) (View, error)
 	mutex   sync.Mutex
 	merge   func(previous, next C) C
 	pending map[K]C
@@ -32,8 +39,8 @@ type Publisher[K comparable, C any] struct {
 // about. view runs once per change sent and returns the View each subscriber
 // is asked through; work shared by every subscriber, such as a lookup, belongs
 // in view itself, and work that depends on the person in the View. A nil View
-// sends nothing.
-func NewPublisher[K comparable, C any](hub *Hub, topic string, key func(C) K, view func(ctx context.Context, change C) View) *Publisher[K, C] {
+// sends nothing; an error keeps the change to try again.
+func NewPublisher[K comparable, C any](hub *Hub, topic string, key func(C) K, view func(ctx context.Context, change C) (View, error)) *Publisher[K, C] {
 	return &Publisher[K, C]{hub: hub, topic: topic, key: key, view: view, pending: map[K]C{}, signal: make(chan struct{}, 1)}
 }
 
@@ -69,8 +76,8 @@ func (publisher *Publisher[K, C]) Add(change C) {
 	}
 }
 
-// Run sends pending changes until ctx ends. Changes added after it returns
-// are dropped.
+// Run sends pending changes until ctx ends, logging and retrying any whose
+// view fails. Changes added after it returns are dropped.
 func (publisher *Publisher[K, C]) Run(ctx context.Context) {
 	defer func() {
 		publisher.mutex.Lock()
@@ -78,20 +85,64 @@ func (publisher *Publisher[K, C]) Run(ctx context.Context) {
 		publisher.pending, publisher.order = nil, nil
 		publisher.mutex.Unlock()
 	}()
+	var retry <-chan time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-publisher.signal:
-			publisher.mutex.Lock()
-			pending, order := publisher.pending, publisher.order
-			publisher.pending, publisher.order = map[K]C{}, nil
-			publisher.mutex.Unlock()
-			for _, key := range order {
-				if view := publisher.view(ctx, pending[key]); view != nil {
-					_ = publisher.hub.PublishEach(ctx, publisher.topic, view)
+		case <-retry:
+		}
+		publisher.mutex.Lock()
+		pending, order := publisher.pending, publisher.order
+		publisher.pending, publisher.order = map[K]C{}, nil
+		publisher.mutex.Unlock()
+		var failed []K
+		for _, key := range order {
+			view, err := publisher.view(ctx, pending[key])
+			if err != nil {
+				if ctx.Err() != nil {
+					return
 				}
+				slog.ErrorContext(ctx, "realtime: publish", "topic", publisher.topic, "error", err)
+				failed = append(failed, key)
+				continue
+			}
+			if view != nil {
+				_ = publisher.hub.PublishEach(ctx, publisher.topic, view)
 			}
 		}
+		retry = nil
+		if len(failed) > 0 {
+			publisher.keep(failed, pending)
+			retry = time.After(retryAfter)
+		}
 	}
+}
+
+// keep puts failed changes back ahead of those added since, merging each with
+// a newer change for its key when Merge is set, and otherwise letting the
+// newer change replace it.
+func (publisher *Publisher[K, C]) keep(failed []K, changes map[K]C) {
+	publisher.mutex.Lock()
+	defer publisher.mutex.Unlock()
+	order := make([]K, 0, len(failed)+len(publisher.order))
+	first := map[K]bool{}
+	for _, key := range failed {
+		first[key] = true
+		newer, replaced := publisher.pending[key]
+		switch {
+		case !replaced:
+			publisher.pending[key] = changes[key]
+		case publisher.merge != nil:
+			publisher.pending[key] = publisher.merge(changes[key], newer)
+		}
+		order = append(order, key)
+	}
+	for _, key := range publisher.order {
+		if !first[key] {
+			order = append(order, key)
+		}
+	}
+	publisher.order = order
 }

@@ -21,6 +21,11 @@ var errUnauthenticated = errors.New("realtime: unauthenticated")
 // it apart from a network drop.
 const AuthenticationEnded = 4401
 
+// Ready is the first message a subscribed socket receives: from then on it
+// misses no change on its topics, so a page refetches when Ready arrives rather
+// than when the socket opens, and a test publishes only after reading it.
+const Ready = `{"ready":true}`
+
 // View says what one person receives, or false to send them nothing. The
 // api/access read rules decide it, so each person sees only their own view.
 type View func(person identity.Identity) ([]byte, bool)
@@ -191,8 +196,8 @@ func (connection *Conn) release(authenticationEnded bool) {
 	})
 }
 
-// Subscriber is a handler that accepts a socket, subscribes it to topic, and
-// keeps it until the page leaves. Authorize the topic on the route first.
+// Subscriber is a handler that accepts a socket, subscribes it to topic, sends
+// Ready, and keeps it until the page leaves. Authorize the topic on the route first.
 func (hub *Hub) Subscriber(topic string) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		connection, err := hub.Accept(writer, request)
@@ -201,6 +206,9 @@ func (hub *Hub) Subscriber(topic string) http.Handler {
 		}
 		defer connection.Close()
 		if err := connection.Subscribe(topic); err != nil {
+			return
+		}
+		if err := connection.Write(request.Context(), []byte(Ready)); err != nil {
 			return
 		}
 		connection.Keep(request.Context())
