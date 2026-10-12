@@ -27,17 +27,23 @@ func Notes(hub *realtime.Hub) http.Handler {
 func NewNotesPublisher(hub *realtime.Hub, profiles *userprofiles.System) *realtime.Publisher[int64, notes.Change] {
 	return realtime.NewPublisher(hub, NotesTopic,
 		func(change notes.Change) int64 { return change.ID },
-		func(ctx context.Context, person identity.Identity, change notes.Change) ([]byte, bool) {
+		func(ctx context.Context, change notes.Change) func(identity.Identity) ([]byte, bool) {
+			var author userprofiles.UserProfile // looked up once, not once per subscriber
 			if change.Note != nil {
 				authors, err := profiles.Lookup(ctx, []string{change.Note.AuthorSubject})
 				if err != nil {
 					slog.ErrorContext(ctx, "note author profile", "error", err)
-					return nil, false
+					return nil
 				}
-				if view, ok := access.ViewNote(person, *change.Note, authors[change.Note.AuthorSubject]); ok {
-					return marshal(map[string]any{"note": view}, true)
-				}
+				author = authors[change.Note.AuthorSubject]
 			}
-			return marshal(map[string]any{"id": change.ID, "removed": true}, true)
+			return func(person identity.Identity) ([]byte, bool) {
+				if change.Note != nil {
+					if view, ok := access.ViewNote(person, *change.Note, author); ok {
+						return marshal(map[string]any{"note": view}, true)
+					}
+				}
+				return marshal(map[string]any{"id": change.ID, "removed": true}, true)
+			}
 		})
 }

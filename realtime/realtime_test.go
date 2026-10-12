@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -209,13 +210,18 @@ func TestPublisher(t *testing.T) {
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	var viewed sync.Map // subject -> count of views, to show view runs per subscriber
+	var prepared atomic.Int32 // view runs once per change sent
+	var viewed sync.Map       // subject -> how many changes the returned function saw
 	publisher := NewPublisher(&hub, "items.changed",
 		func(item change) int { return item.ID },
-		func(_ context.Context, person identity.Identity, item change) ([]byte, bool) {
-			count, _ := viewed.LoadOrStore(person.Subject, new(int))
-			*count.(*int)++
-			return []byte(strconv.Itoa(item.ID) + ":" + item.Text), item.Owner == person.Subject
+		func(_ context.Context, item change) func(identity.Identity) ([]byte, bool) {
+			prepared.Add(1)
+			message := []byte(strconv.Itoa(item.ID) + ":" + item.Text)
+			return func(person identity.Identity) ([]byte, bool) {
+				count, _ := viewed.LoadOrStore(person.Subject, new(int))
+				*count.(*int)++
+				return message, item.Owner == person.Subject
+			}
 		})
 	publisher.Merge(func(previous, next change) change {
 		next.Text = previous.Text + "+" + next.Text
@@ -243,6 +249,9 @@ func TestPublisher(t *testing.T) {
 	publisher.Add(change{ID: 1, Text: "e", Owner: "other"})
 	if data := readText(t, ctx, other); data != "1:e" {
 		t.Fatalf("other received %q", data)
+	}
+	if prepared.Load() != 4 {
+		t.Fatalf("view ran %d times, expected once per change sent", prepared.Load())
 	}
 	for _, subject := range []string{"owner", "other"} {
 		count, _ := viewed.Load(subject)
