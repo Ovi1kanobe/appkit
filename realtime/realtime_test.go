@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -14,13 +15,42 @@ import (
 	"github.com/coder/websocket"
 )
 
+// withSubject gives the request the identity its ?subject names, as sessions would.
+func withSubject(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		subject := request.URL.Query().Get("subject")
+		if subject != "" {
+			request = request.WithContext(identity.WithContext(request.Context(), identity.Identity{Subject: subject}))
+		}
+		next.ServeHTTP(writer, request)
+	})
+}
+
+func dial(t *testing.T, ctx context.Context, server *httptest.Server, subject string) *websocket.Conn {
+	t.Helper()
+	client, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"?subject="+subject, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.CloseNow() })
+	return client
+}
+
+func readText(t *testing.T, ctx context.Context, client *websocket.Conn) string {
+	t.Helper()
+	_, data, err := client.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
 func TestConnectionLifecycle(t *testing.T) {
 	var hub Hub
 	defer hub.Close()
 	accepted := make(chan *Conn, 3)
 	finished := make(chan struct{}, 3)
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		request = request.WithContext(identity.WithContext(request.Context(), identity.Identity{Subject: request.URL.Query().Get("subject")}))
+	server := httptest.NewServer(withSubject(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		connection, err := hub.Accept(writer, request)
 		if err != nil {
 			return
@@ -31,53 +61,16 @@ func TestConnectionLifecycle(t *testing.T) {
 			t.Error(err)
 		}
 		accepted <- connection
-		for {
-			if _, err := connection.Read(request.Context()); err != nil {
-				return
-			}
-		}
-	}))
+		connection.Keep(request.Context())
+	})))
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	dial := func(subject string) (*websocket.Conn, *Conn) {
-		t.Helper()
-		client, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"?subject="+subject, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = client.CloseNow() })
-		select {
-		case connection := <-accepted:
-			return client, connection
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-			return nil, nil
-		}
-	}
-	first, firstServer := dial("same")
-	second, secondServer := dial("same")
-	third, thirdServer := dial("other")
+	first, firstServer := dial(t, ctx, server, "same"), <-accepted
+	second, secondServer := dial(t, ctx, server, "same"), <-accepted
+	third, thirdServer := dial(t, ctx, server, "other"), <-accepted
 	if firstServer.Identity().Subject != "same" {
 		t.Fatal("identity lost")
-	}
-	secondServer.Unsubscribe("updates")
-	if err := hub.Publish(ctx, "updates", []byte("hello")); err != nil {
-		t.Fatal(err)
-	}
-	for _, client := range []*websocket.Conn{first, third} {
-		_, data, err := client.Read(ctx)
-		if err != nil || string(data) != "hello" {
-			t.Fatalf("message=%q err=%v", data, err)
-		}
-	}
-	// An unsubscribed client receives only this direct marker, not the publish.
-	if err := secondServer.Write(ctx, []byte("marker")); err != nil {
-		t.Fatal(err)
-	}
-	_, data, err := second.Read(ctx)
-	if err != nil || string(data) != "marker" {
-		t.Fatal("unsubscribe failed")
 	}
 	// PublishEach sends each person only what view returns for them.
 	if err := hub.PublishEach(ctx, "updates", func(person identity.Identity) ([]byte, bool) {
@@ -85,19 +78,22 @@ func TestConnectionLifecycle(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, data, err := first.Read(ctx); err != nil || string(data) != "only same" {
-		t.Fatalf("view message=%q err=%v", data, err)
+	for _, client := range []*websocket.Conn{first, second} {
+		if data := readText(t, ctx, client); data != "only same" {
+			t.Fatalf("view message=%q", data)
+		}
 	}
 	if err := thirdServer.Write(ctx, []byte("next")); err != nil {
 		t.Fatal(err)
 	}
-	if _, data, err := third.Read(ctx); err != nil || string(data) != "next" {
-		t.Fatalf("skipped subscriber received %q err=%v", data, err)
+	if data := readText(t, ctx, third); data != "next" {
+		t.Fatalf("skipped subscriber received %q", data)
 	}
 	if err := firstServer.Subscribe(""); err == nil {
 		t.Fatal("empty topic accepted")
 	}
-	hub.DisconnectSubject("same")
+	firstServer.Close()
+	secondServer.Close()
 	for _, connection := range []*Conn{firstServer, secondServer} {
 		if !errors.Is(connection.Subscribe("updates"), ErrClosed) {
 			t.Fatal("closed connection retained")
@@ -106,9 +102,8 @@ func TestConnectionLifecycle(t *testing.T) {
 	if err := thirdServer.Write(ctx, []byte("still open")); err != nil {
 		t.Fatal(err)
 	}
-	_, data, err = third.Read(ctx)
-	if err != nil || string(data) != "still open" {
-		t.Fatal("wrong subject disconnected")
+	if data := readText(t, ctx, third); data != "still open" {
+		t.Fatal("wrong connection closed")
 	}
 	_ = third.CloseNow()
 	for range 3 {
@@ -140,15 +135,7 @@ func TestAuthenticationAndOrigin(t *testing.T) {
 			if test.closed {
 				hub.Close()
 			}
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if test.subject != "" {
-					r = r.WithContext(identity.WithContext(r.Context(), identity.Identity{Subject: test.subject}))
-				}
-				connection, err := hub.Accept(w, r)
-				if err == nil {
-					connection.Close()
-				}
-			}))
+			server := httptest.NewServer(withSubject(hub.Subscriber("updates")))
 			defer server.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
@@ -156,7 +143,7 @@ func TestAuthenticationAndOrigin(t *testing.T) {
 			if test.origin != "" {
 				headers.Set("Origin", test.origin)
 			}
-			client, response, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), &websocket.DialOptions{HTTPHeader: headers})
+			client, response, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"?subject="+test.subject, &websocket.DialOptions{HTTPHeader: headers})
 			if client != nil {
 				_ = client.CloseNow()
 			}
@@ -171,28 +158,19 @@ func TestConcurrentWritesAndPing(t *testing.T) {
 	var hub Hub
 	defer hub.Close()
 	accepted := make(chan *Conn, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r = r.WithContext(identity.WithContext(r.Context(), identity.Identity{Subject: "one"}))
-		connection, err := hub.Accept(w, r)
+	server := httptest.NewServer(withSubject(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		connection, err := hub.Accept(writer, request)
 		if err != nil {
 			return
 		}
 		defer connection.Close()
 		accepted <- connection
-		for {
-			if _, err := connection.Read(r.Context()); err != nil {
-				return
-			}
-		}
-	}))
+		connection.Keep(request.Context())
+	})))
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	client, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.CloseNow()
+	client := dial(t, ctx, server, "one")
 	connection := <-accepted
 	var writers sync.WaitGroup
 	for range 10 {
@@ -205,17 +183,77 @@ func TestConcurrentWritesAndPing(t *testing.T) {
 		}()
 	}
 	for range 10 {
-		if _, _, err := client.Read(ctx); err != nil {
-			t.Fatal(err)
-		}
+		readText(t, ctx, client)
 	}
 	writers.Wait()
 	readContext := client.CloseRead(ctx)
-	if err := connection.Ping(readContext); err != nil {
+	if err := connection.ping(readContext); err != nil {
 		t.Fatal(err)
 	}
 	hub.Close()
 	if !errors.Is(connection.Subscribe("late"), ErrClosed) {
 		t.Fatal("shutdown retained connection")
+	}
+}
+
+type change struct {
+	ID    int
+	Text  string
+	Owner string
+}
+
+func TestPublisher(t *testing.T) {
+	var hub Hub
+	defer hub.Close()
+	server := httptest.NewServer(withSubject(hub.Subscriber("items.changed")))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var viewed sync.Map // subject -> count of views, to show view runs per subscriber
+	publisher := NewPublisher(&hub, "items.changed",
+		func(item change) int { return item.ID },
+		func(_ context.Context, person identity.Identity, item change) ([]byte, bool) {
+			count, _ := viewed.LoadOrStore(person.Subject, new(int))
+			*count.(*int)++
+			return []byte(strconv.Itoa(item.ID) + ":" + item.Text), item.Owner == person.Subject
+		})
+	publisher.Merge(func(previous, next change) change {
+		next.Text = previous.Text + "+" + next.Text
+		return next
+	})
+	owner := dial(t, ctx, server, "owner")
+	other := dial(t, ctx, server, "other")
+	// Added before Run: the latest per item is kept, merged, in first-arrival order.
+	publisher.Add(change{ID: 1, Text: "a", Owner: "owner"})
+	publisher.Add(change{ID: 2, Text: "b", Owner: "owner"})
+	publisher.Add(change{ID: 3, Text: "c", Owner: "other"})
+	publisher.Add(change{ID: 2, Text: "d", Owner: "owner"})
+	runContext, stop := context.WithCancel(ctx)
+	stopped := make(chan struct{})
+	go func() { publisher.Run(runContext); close(stopped) }()
+	for _, expected := range []string{"1:a", "2:b+d"} {
+		if data := readText(t, ctx, owner); data != expected {
+			t.Fatalf("owner received %q, expected %q", data, expected)
+		}
+	}
+	if data := readText(t, ctx, other); data != "3:c" {
+		t.Fatalf("other received %q", data)
+	}
+	// A change added while Run waits is sent too.
+	publisher.Add(change{ID: 1, Text: "e", Owner: "other"})
+	if data := readText(t, ctx, other); data != "1:e" {
+		t.Fatalf("other received %q", data)
+	}
+	for _, subject := range []string{"owner", "other"} {
+		count, _ := viewed.Load(subject)
+		if *count.(*int) != 4 {
+			t.Fatalf("%s viewed %d changes, expected 4", subject, *count.(*int))
+		}
+	}
+	stop()
+	select {
+	case <-stopped:
+	case <-ctx.Done():
+		t.Fatal("Run did not stop")
 	}
 }

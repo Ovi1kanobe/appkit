@@ -89,23 +89,3 @@ func marshal(value any, ok bool) ([]byte, bool) {
 	data, err := json.Marshal(value)
 	return data, err == nil
 }
-
-// subscribe accepts a socket, subscribes it to topic, and keeps reading until
-// the page leaves.
-func subscribe(hub *realtime.Hub, topic string) http.Handler {
-	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		connection, err := hub.Accept(writer, request)
-		if err != nil {
-			return
-		}
-		defer connection.Close()
-		if err := connection.Subscribe(topic); err != nil {
-			return
-		}
-		for {
-			if _, err := connection.Read(request.Context()); err != nil {
-				return
-			}
-		}
-	})
-}
