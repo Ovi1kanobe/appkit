@@ -33,7 +33,7 @@ func ListNotes(system *notes.System, profiles *userprofiles.System) http.Handler
 		}
 		authors := make([]string, 0, len(list))
 		for _, note := range list {
-			authors = append(authors, note.AuthorSubject)
+			authors = append(authors, note.CreatedBy)
 		}
 		authorProfiles, err := profiles.Lookup(request.Context(), authors)
 		if err != nil {
@@ -42,7 +42,7 @@ func ListNotes(system *notes.System, profiles *userprofiles.System) http.Handler
 		}
 		views := []access.Note{}
 		for _, note := range list {
-			if view, ok := access.ViewNote(viewer(request), note, authorProfiles[note.AuthorSubject]); ok {
+			if view, ok := access.ViewNote(viewer(request), note, authorProfiles[note.CreatedBy]); ok {
 				views = append(views, view)
 			}
 		}

@@ -25,10 +25,10 @@ const maximumLength = 500
 type Actor struct{ Subject string }
 
 type Note struct {
-	ID            int64     `json:"id"`
-	Text          string    `json:"text"`
-	AuthorSubject string    `json:"-"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID        int64     `json:"id"`
+	Text      string    `json:"text"`
+	CreatedBy string    `json:"-"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // Change is a created note, or a deleted note's ID with Note nil.
@@ -55,7 +55,7 @@ func Open(ctx context.Context, database *sql.DB, onChange func(Change)) (*System
 }
 
 func (system *System) List(ctx context.Context) ([]Note, error) {
-	rows, err := system.database.QueryContext(ctx, `SELECT id, text, author_subject, created_at FROM notes ORDER BY id DESC`)
+	rows, err := system.database.QueryContext(ctx, `SELECT id, text, created_by, created_at FROM notes ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +64,7 @@ func (system *System) List(ctx context.Context) ([]Note, error) {
 	for rows.Next() {
 		var note Note
 		var created string
-		if err := rows.Scan(&note.ID, &note.Text, &note.AuthorSubject, &created); err != nil {
+		if err := rows.Scan(&note.ID, &note.Text, &note.CreatedBy, &created); err != nil {
 			return nil, err
 		}
 		if note.CreatedAt, err = time.Parse(time.RFC3339, created); err != nil {
@@ -80,9 +80,10 @@ func (system *System) Create(ctx context.Context, actor Actor, text string) (Not
 	if text == "" || utf8.RuneCountInString(text) > maximumLength {
 		return Note{}, ErrInvalid
 	}
-	note := Note{Text: text, AuthorSubject: actor.Subject, CreatedAt: time.Now().UTC().Truncate(time.Second)}
-	result, err := system.database.ExecContext(ctx, `INSERT INTO notes (text, author_subject, created_at) VALUES (?, ?, ?)`,
-		note.Text, actor.Subject, note.CreatedAt.Format(time.RFC3339))
+	note := Note{Text: text, CreatedBy: actor.Subject, CreatedAt: time.Now().UTC().Truncate(time.Second)}
+	created := note.CreatedAt.Format(time.RFC3339)
+	result, err := system.database.ExecContext(ctx, `INSERT INTO notes (text, created_by, created_at, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)`,
+		note.Text, actor.Subject, created, actor.Subject, created)
 	if err != nil {
 		return Note{}, err
 	}
@@ -97,8 +98,8 @@ func (system *System) Create(ctx context.Context, actor Actor, text string) (Not
 func (system *System) Get(ctx context.Context, id int64) (Note, error) {
 	var note Note
 	var created string
-	err := system.database.QueryRowContext(ctx, `SELECT id, text, author_subject, created_at FROM notes WHERE id = ?`, id).
-		Scan(&note.ID, &note.Text, &note.AuthorSubject, &created)
+	err := system.database.QueryRowContext(ctx, `SELECT id, text, created_by, created_at FROM notes WHERE id = ?`, id).
+		Scan(&note.ID, &note.Text, &note.CreatedBy, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Note{}, ErrNotFound
 	}

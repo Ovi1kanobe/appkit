@@ -63,9 +63,10 @@ func (system *System) SetAPIKey(ctx context.Context, actor Actor, apiKey string)
 		return ErrInvalid
 	}
 	runes := []rune(apiKey)
-	_, err := system.database.ExecContext(ctx, `INSERT INTO email_settings (id, api_key, last_four, updated_by, updated_at) VALUES (1, ?, ?, ?, ?)
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := system.database.ExecContext(ctx, `INSERT INTO email_settings (id, api_key, last_four, created_by, created_at, updated_by, updated_at) VALUES (1, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET api_key = excluded.api_key, last_four = excluded.last_four, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
-		system.key.Encrypt(apiKeyLabel, apiKey), string(runes[len(runes)-4:]), actor.Subject, time.Now().UTC().Format(time.RFC3339))
+		system.key.Encrypt(apiKeyLabel, apiKey), string(runes[len(runes)-4:]), actor.Subject, now, actor.Subject, now)
 	if err != nil {
 		return err
 	}

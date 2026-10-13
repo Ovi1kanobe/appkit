@@ -29,11 +29,11 @@ func NewNotesPublisher(hub *realtime.Hub, profiles *userprofiles.System) *realti
 		func(ctx context.Context, change notes.Change) (realtime.View, error) {
 			var author userprofiles.UserProfile // looked up once, not once per subscriber
 			if change.Note != nil {
-				authors, err := profiles.Lookup(ctx, []string{change.Note.AuthorSubject})
+				authors, err := profiles.Lookup(ctx, []string{change.Note.CreatedBy})
 				if err != nil {
 					return nil, err
 				}
-				author = authors[change.Note.AuthorSubject]
+				author = authors[change.Note.CreatedBy]
 			}
 			return func(person identity.Identity) ([]byte, bool) {
 				if change.Note != nil {
