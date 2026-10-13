@@ -2,18 +2,21 @@ package authz
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
 func TestPolicy(t *testing.T) {
 	roles := map[string][]string{"reader": {"bots.read"}, "operator": {"bots.read", "bots.start"}}
 	groups := map[string][]string{"viewers": {"reader"}, "operators": {"operator"}}
-	policy, err := New(roles, groups)
+	clients := map[string][]string{"monitor": {"reader"}}
+	policy, err := New(roles, groups, clients)
 	if err != nil {
 		t.Fatal(err)
 	}
 	roles["reader"][0] = "changed"
 	groups["viewers"][0] = "unknown"
+	clients["monitor"][0] = "unknown"
 	for _, test := range []struct {
 		name               string
 		groups             []string
@@ -47,11 +50,24 @@ func TestPolicy(t *testing.T) {
 	if (Actor{}).Can("anything") {
 		t.Fatal("zero actor allowed")
 	}
+	if client := policy.ResolveClient("monitor"); !client.Can("bots.read") || client.Can("bots.start") || strings.Join(client.Roles(), ",") != "reader" {
+		t.Fatalf("client permissions %v %v", client.Roles(), client.Permissions())
+	}
+	if policy.ResolveClient("stranger").Can("bots.read") || policy.ResolveClient("viewers").Can("bots.read") {
+		t.Fatal("unlisted client allowed")
+	}
 }
 
 func TestInvalidPolicy(t *testing.T) {
-	for _, test := range []struct{ roles, groups map[string][]string }{{map[string][]string{"": {}}, nil}, {map[string][]string{"role": {""}}, nil}, {nil, map[string][]string{"group": {"unknown"}}}, {nil, map[string][]string{"": {}}}} {
-		if _, err := New(test.roles, test.groups); err == nil {
+	for _, test := range []struct{ roles, groups, clients map[string][]string }{
+		{map[string][]string{"": {}}, nil, nil},
+		{map[string][]string{"role": {""}}, nil, nil},
+		{nil, map[string][]string{"group": {"unknown"}}, nil},
+		{nil, map[string][]string{"": {}}, nil},
+		{nil, nil, map[string][]string{"client": {"unknown"}}},
+		{nil, nil, map[string][]string{"": {}}},
+	} {
+		if _, err := New(test.roles, test.groups, test.clients); err == nil {
 			t.Fatal("invalid policy accepted")
 		}
 	}

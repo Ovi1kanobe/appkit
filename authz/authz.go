@@ -1,4 +1,5 @@
-// Package authz maps external groups to application-defined roles and permissions.
+// Package authz maps external groups, and the Rauthy clients of calling
+// applications, to application-defined roles and permissions.
 package authz
 
 import (
@@ -8,13 +9,16 @@ import (
 
 // Policy is immutable after construction and safe for concurrent use.
 type Policy struct {
-	roles  map[string][]string
-	groups map[string][]string
+	roles   map[string][]string
+	groups  map[string][]string
+	clients map[string][]string
 }
 
-// New validates and copies application role definitions and external group mappings.
-func New(roles, groups map[string][]string) (*Policy, error) {
-	policy := &Policy{roles: make(map[string][]string), groups: make(map[string][]string)}
+// New validates and copies the application's role definitions, the external
+// groups that grant them to people, and the Rauthy client IDs that grant them
+// to calling applications. An application nobody calls passes nil clients.
+func New(roles, groups, clients map[string][]string) (*Policy, error) {
+	policy := &Policy{roles: make(map[string][]string), groups: make(map[string][]string), clients: make(map[string][]string)}
 	for role, permissions := range roles {
 		if role == "" {
 			return nil, fmt.Errorf("authz: empty role")
@@ -36,6 +40,17 @@ func New(roles, groups map[string][]string) (*Policy, error) {
 			}
 		}
 		policy.groups[group] = append([]string(nil), mapped...)
+	}
+	for client, mapped := range clients {
+		if client == "" {
+			return nil, fmt.Errorf("authz: empty client")
+		}
+		for _, role := range mapped {
+			if _, exists := policy.roles[role]; !exists {
+				return nil, fmt.Errorf("authz: unknown role %q", role)
+			}
+		}
+		policy.clients[client] = append([]string(nil), mapped...)
 	}
 	return policy, nil
 }
@@ -60,6 +75,20 @@ func (policy *Policy) Resolve(groups []string, localRoles ...string) Actor {
 			roles[role] = struct{}{}
 		}
 	}
+	return policy.actor(roles)
+}
+
+// ResolveClient returns what a calling application, named by its Rauthy client
+// ID, may do. An unlisted client gets nothing.
+func (policy *Policy) ResolveClient(clientID string) Actor {
+	roles := make(map[string]struct{})
+	for _, role := range policy.clients[clientID] {
+		roles[role] = struct{}{}
+	}
+	return policy.actor(roles)
+}
+
+func (policy *Policy) actor(roles map[string]struct{}) Actor {
 	actor := Actor{permissions: make(map[string]struct{})}
 	for role := range roles {
 		actor.roles = append(actor.roles, role)

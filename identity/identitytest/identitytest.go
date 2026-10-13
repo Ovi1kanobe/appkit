@@ -27,7 +27,10 @@ type User struct {
 }
 
 // Provider is a fake OIDC provider. Use Issuer and ClientID in the application's
-// identity configuration; any client secret is accepted.
+// identity configuration; any client secret is accepted. It also issues client
+// credentials tokens to any confidential client for any resource, so a service
+// call can be tested end to end; whether a client may request a resource is
+// Rauthy's decision, not the application's.
 type Provider struct {
 	Issuer   string
 	ClientID string
@@ -68,6 +71,19 @@ func (provider *Provider) serve(writer http.ResponseWriter, request *http.Reques
 		_ = json.NewEncoder(writer).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &provider.key.PublicKey, KeyID: "test", Algorithm: "RS256", Use: "sig"}}})
 	case "/token":
 		_ = request.ParseForm()
+		if request.Form.Get("grant_type") == "client_credentials" {
+			if request.Form.Get("client_id") == "" || request.Form.Get("client_secret") == "" {
+				http.Error(writer, `{"error":"invalid_client"}`, http.StatusUnauthorized)
+				return
+			}
+			access, err := provider.token("at+jwt", provider.clientClaims(request.Form.Get("client_id"), request.Form["resource"]...))
+			if err != nil {
+				http.Error(writer, `{"error":"server_error"}`, http.StatusInternalServerError)
+				return
+			}
+			_ = json.NewEncoder(writer).Encode(map[string]any{"access_token": access, "token_type": "Bearer", "expires_in": 1800})
+			return
+		}
 		provider.mu.Lock()
 		login, ok := provider.codes[request.Form.Get("code")]
 		delete(provider.codes, request.Form.Get("code"))
@@ -101,6 +117,19 @@ func (provider *Provider) claims(user User) map[string]any {
 	return map[string]any{"iss": provider.Issuer, "aud": provider.ClientID, "sub": user.Subject, "email": user.Email, "groups": user.Groups, "iat": now, "exp": now + 3600}
 }
 
+// clientClaims are a client credentials token as Rauthy issues it: no subject,
+// the client in azp, and the audience the client plus each granted resource.
+func (provider *Provider) clientClaims(clientID string, resources ...string) map[string]any {
+	now := time.Now().Unix()
+	audience := []string{clientID}
+	for _, resource := range resources {
+		if resource != "" && resource != clientID {
+			audience = append(audience, resource)
+		}
+	}
+	return map[string]any{"iss": provider.Issuer, "aud": audience, "azp": clientID, "iat": now, "exp": now + 1800}
+}
+
 func (provider *Provider) token(tokenType string, claims map[string]any) (string, error) {
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: provider.key}, (&jose.SignerOptions{}).WithType(jose.ContentType(tokenType)).WithHeader("kid", "test"))
 	if err != nil {
@@ -121,6 +150,19 @@ func (provider *Provider) token(tokenType string, claims map[string]any) (string
 func (provider *Provider) AccessToken(t testing.TB, user User) string {
 	t.Helper()
 	token, err := provider.token("at+jwt", provider.claims(user))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
+// ClientToken returns the access token Rauthy would issue to the application
+// whose Rauthy client ID is clientID when it requests resources, so bearer
+// routes can be tested as another application calls them. Include the tested
+// application's ClientID in resources, or its routes refuse the token.
+func (provider *Provider) ClientToken(t testing.TB, clientID string, resources ...string) string {
+	t.Helper()
+	token, err := provider.token("at+jwt", provider.clientClaims(clientID, resources...))
 	if err != nil {
 		t.Fatal(err)
 	}

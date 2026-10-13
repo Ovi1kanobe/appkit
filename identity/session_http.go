@@ -31,13 +31,18 @@ func (s *Sessions) Routes(mux *http.ServeMux) {
 }
 
 // Bearer authenticates a separate non-browser route with an access token and
-// attaches the identity with its permissions. It ignores browser cookies;
-// logout does not revoke an already issued access token.
+// attaches the identity with its permissions: a person's from their groups, a
+// calling application's from the policy's client list. It ignores browser
+// cookies; logout does not revoke an already issued access token.
 func (s *Sessions) Bearer(next http.Handler) http.Handler {
 	return s.verifier.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		person, _ := FromContext(r.Context())
-		person.Permissions = s.config.Policy.Resolve(person.Groups).Permissions()
-		next.ServeHTTP(w, r.WithContext(WithContext(r.Context(), person)))
+		caller, _ := FromContext(r.Context())
+		if caller.Client {
+			caller.Permissions = s.config.Policy.ResolveClient(caller.Subject).Permissions()
+		} else {
+			caller.Permissions = s.config.Policy.Resolve(caller.Groups).Permissions()
+		}
+		next.ServeHTTP(w, r.WithContext(WithContext(r.Context(), caller)))
 	}))
 }
 

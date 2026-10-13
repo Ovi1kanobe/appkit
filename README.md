@@ -8,8 +8,8 @@ Requires Go 1.26 or newer.
 
 | Package | Owns |
 | --- | --- |
-| `identity` | OIDC discovery, cached JWKS verification, bearer authentication, browser sessions, context identity, back-channel logout |
-| `authz` | External group to application role to permission mapping |
+| `identity` | OIDC discovery, cached JWKS verification, bearer authentication, browser sessions, context identity, back-channel logout, service calls between applications |
+| `authz` | External group, and calling application, to application role to permission mapping |
 | `realtime` | Authenticated WebSocket connections, subscriptions, safe writes, a coalescing publisher, cleanup |
 | `frontend` | Embedded asset serving and conservative SPA fallback |
 | `config` | Declared environment variables, reported all at once when missing or invalid |
@@ -63,7 +63,7 @@ mux.Handle("GET /api/status", sessions.Bearer(identity.RequirePermission("diagno
 
 `Require` redirects signed-out HTML navigation to Rauthy and returns 401 for API/WebSocket requests.
 API and WebSocket errors from AppKit use the same `{"error": "..."}` body as applications.
-`Require`, `Optional`, and `Bearer` attach the identity with `Permissions` resolved from its groups by the configured policy, never stored.
+`Require`, `Optional`, and `Bearer` attach the identity with `Permissions` resolved by the configured policy, never stored: from its groups for a person, and from the policy's client list for a calling application (see Service calls).
 `identity.RequirePermission` answers 401 without an identity and 403 when `Identity.Can` is false; resource-level rules in the application use the same `Can`.
 Browser middleware ignores bearer credentials; bearer middleware ignores cookies.
 Bearer-only apps can use `identity.New` and `Verifier.Middleware` without any SQLite dependency; that identity carries no permissions.
@@ -126,6 +126,7 @@ The app's Rauthy client, public or confidential, has `authorization_code`, PKCE 
 Its redirect URI is exactly `<APP_ORIGIN>/auth/callback` and its back-channel logout URI is `<APP_ORIGIN>/auth/backchannel`, which Rauthy must be able to reach; wildcards are unnecessary.
 A short token lifetime bounds how long bearer clients keep access after logout.
 Access is granted through Rauthy groups named after the app, such as `example-members`; no SCIM setup is needed.
+An app that calls another one also has the `client_credentials` flow and lists the other app's client ID under its allowed resources (see Service calls).
 
 ## Test an application
 
@@ -195,17 +196,36 @@ policy, err := authz.New(
         "auditor": {"bots.all.read"},
     },
     map[string][]string{"deployment-builders": {"builder"}},
+    map[string][]string{"monitor": {"auditor"}}, // Rauthy clients of applications that call this one; nil when none
 )
 // Handle err at startup; pass policy to identity.SessionConfig, which resolves it onto every identity.
 if viewer.Can("bots.write") { /* viewer is the identity.Identity from the request */ }
 ```
 
-Multiple groups/roles union permissions; unknown groups grant nothing; roles and permissions are returned in sorted order.
+Multiple groups/roles union permissions; unknown groups and unlisted clients grant nothing; roles and permissions are returned in sorted order.
 `policy.Resolve(groups, localRoles...)` returns an `authz.Actor` directly, and also accepts trusted application-owned role assignments, never unvalidated request values.
 Permissions say what a role may do; the application's own resource rules decide which records that applies to.
 Rauthy groups are shared by every application, so start each group name with the application name (`notes-admins`, `billing-admins`).
 
 Applications keep their own profile of each person, keyed by `Identity.Subject` and refreshed through `SessionConfig.AppInfo`.
+
+## Service calls
+
+An application calls another AppKit application as itself, never as a person, with an access token Rauthy issues through the client credentials grant.
+
+```go
+accounts, err := sessions.ServiceClient("accounts") // the other application's Rauthy client ID
+// Handle err at startup; accounts is an *http.Client whose every request carries a current token.
+```
+
+The caller's Rauthy client is confidential, has the `client_credentials` flow, and lists the target's client ID under its allowed resources; Rauthy refuses any other resource with `invalid_target`, so which application may call which is decided in Rauthy, on the calling client.
+A client token has no `sub`; Rauthy names the caller in `azp` and addresses the token to both the caller and the target through `aud`.
+The target's `Bearer` middleware accepts it only because its own client ID is in that audience, so a token minted for one application is refused by every other.
+It attaches an `Identity` with `Client` true and `Subject` the caller's client ID, and grants the permissions the policy's client list gives that ID; an unlisted client gets 403.
+Read and write rules tell a calling application from a person with `Client`.
+Tokens are renewed before they expire; disabling the caller's client in Rauthy, or removing the resource from it, ends its access within one token lifetime.
+Keep Rauthy's `CLIENT_CREDENTIALS_MAP_SUB` at its default, off, so a client token is never mistaken for a person.
+`identitytest` issues client tokens through `ClientToken` and serves `ServiceClient`, so service calls are tested without Rauthy.
 
 ## Realtime and frontend
 

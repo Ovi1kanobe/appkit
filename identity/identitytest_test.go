@@ -20,7 +20,7 @@ func TestIdentityTestHelper(t *testing.T) {
 	provider := identitytest.NewProvider(t)
 	app := httptest.NewServer(http.NewServeMux())
 	defer app.Close()
-	policy, _ := authz.New(map[string][]string{"observer": {"diagnostics.read"}}, map[string][]string{"observers": {"observer"}})
+	policy, _ := authz.New(map[string][]string{"observer": {"diagnostics.read"}}, map[string][]string{"observers": {"observer"}}, map[string][]string{"monitor": {"observer"}})
 	sessions, err := identity.NewSessions(context.Background(), identity.SessionConfig{
 		Issuer: provider.Issuer, ClientID: provider.ClientID, Origin: app.URL,
 		DatabasePath: filepath.Join(t.TempDir(), "sessions.sqlite"), Policy: policy,
@@ -36,7 +36,7 @@ func TestIdentityTestHelper(t *testing.T) {
 		_, _ = w.Write([]byte(actor.Subject))
 	})
 	mux.Handle("/page", sessions.Require(ok))
-	mux.Handle("/api", sessions.Bearer(ok))
+	mux.Handle("/api", sessions.Bearer(identity.RequirePermission("diagnostics.read", ok)))
 	app.Config.Handler = mux
 
 	alice := identitytest.User{Subject: "alice", Email: "alice@example.test", Groups: []string{"observers"}}
@@ -66,6 +66,81 @@ func TestIdentityTestHelper(t *testing.T) {
 	if status, _ := get("/api", withCookie); status != 401 {
 		t.Fatalf("bearer route accepted a cookie: %d", status)
 	}
+	// Another application calls the bearer route with a client token.
+	for name, test := range map[string]struct {
+		token  string
+		status int
+		body   string
+	}{
+		"listed client":   {provider.ClientToken(t, "monitor", provider.ClientID), 200, "monitor"},
+		"unlisted client": {provider.ClientToken(t, "stranger", provider.ClientID), 403, `"error"`},
+		"other audience":  {provider.ClientToken(t, "monitor", "billing"), 401, `"error"`},
+	} {
+		if status, body := get("/api", func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+test.token) }); status != test.status || !strings.Contains(body, test.body) {
+			t.Fatalf("%s: %d %q", name, status, body)
+		}
+	}
+}
+
+// TestServiceClient is how an application calls another one: its sessions
+// obtain client tokens addressed to the other application's client ID.
+func TestServiceClient(t *testing.T) {
+	provider := identitytest.NewProvider(t)
+	accounts := httptest.NewServer(http.NewServeMux())
+	defer accounts.Close()
+	policy, _ := authz.New(map[string][]string{"reader": {"profiles.read"}}, nil, map[string][]string{"notes": {"reader"}})
+	accountsSessions, err := identity.NewSessions(context.Background(), identity.SessionConfig{
+		Issuer: provider.Issuer, ClientID: provider.ClientID, Origin: accounts.URL,
+		DatabasePath: filepath.Join(t.TempDir(), "accounts-sessions.sqlite"), Policy: policy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer accountsSessions.Close()
+	mux := http.NewServeMux()
+	mux.Handle("/api/profiles", accountsSessions.Bearer(identity.RequirePermission("profiles.read", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		caller, _ := identity.FromContext(r.Context())
+		_, _ = w.Write([]byte(caller.Subject))
+	}))))
+	accounts.Config.Handler = mux
+
+	notesPolicy, _ := authz.New(nil, nil, nil)
+	notesSessions, err := identity.NewSessions(context.Background(), identity.SessionConfig{
+		Issuer: provider.Issuer, ClientID: "notes", ClientSecret: "notes-secret", Origin: "http://localhost:8081",
+		DatabasePath: filepath.Join(t.TempDir(), "notes-sessions.sqlite"), Policy: notesPolicy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer notesSessions.Close()
+	if _, err := notesSessions.ServiceClient(""); err == nil {
+		t.Fatal("empty target accepted")
+	}
+	client, err := notesSessions.ServiceClient(provider.ClientID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Get(accounts.URL + "/api/profiles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != 200 || string(body) != "notes" {
+		t.Fatalf("service call: %d %q", response.StatusCode, body)
+	}
+	public, _ := authz.New(nil, nil, nil)
+	publicSessions, err := identity.NewSessions(context.Background(), identity.SessionConfig{
+		Issuer: provider.Issuer, ClientID: "public", Origin: "http://localhost:8082",
+		DatabasePath: filepath.Join(t.TempDir(), "public-sessions.sqlite"), Policy: public,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer publicSessions.Close()
+	if _, err := publicSessions.ServiceClient(provider.ClientID); err == nil {
+		t.Fatal("public client made a service client")
+	}
 }
 
 // TestRequirePermission checks the 401/403/200 outcomes of identity.RequirePermission.
@@ -91,7 +166,7 @@ func TestRequirePermission(t *testing.T) {
 func TestSessionSchemaVersion(t *testing.T) {
 	provider := identitytest.NewProvider(t)
 	path := filepath.Join(t.TempDir(), "sessions.sqlite")
-	policy, _ := authz.New(nil, nil)
+	policy, _ := authz.New(nil, nil, nil)
 	config := identity.SessionConfig{Issuer: provider.Issuer, ClientID: provider.ClientID, Origin: "http://localhost:8080", DatabasePath: path, Policy: policy}
 	sessions, err := identity.NewSessions(context.Background(), config)
 	if err != nil {

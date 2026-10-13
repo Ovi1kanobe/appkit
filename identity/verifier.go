@@ -73,7 +73,9 @@ func New(ctx context.Context, config Config) (*Verifier, error) {
 }
 
 // authenticate accepts an RFC 9068 access token (protected header typ=at+jwt),
-// as issued by Rauthy 0.37 and later.
+// as issued by Rauthy 0.37 and later, for a person or, through the client
+// credentials grant, for a calling application. Rauthy omits sub from a client
+// token and names the client in azp.
 // ID tokens, refresh tokens, and logout tokens are not API bearer credentials.
 func (verifier *Verifier) authenticate(ctx context.Context, rawToken string) (Identity, error) {
 	if len(rawToken) == 0 || len(rawToken) > 64*1024 {
@@ -96,20 +98,29 @@ func (verifier *Verifier) authenticate(ctx context.Context, rawToken string) (Id
 		return Identity{}, errInvalidToken
 	}
 	var extraClaims struct {
-		Email     string          `json:"email"`
-		Groups    []string        `json:"groups"`
-		Roles     []string        `json:"roles"`
-		NotBefore int64           `json:"nbf"`
-		Events    json.RawMessage `json:"events"`
+		Email           string          `json:"email"`
+		Groups          []string        `json:"groups"`
+		Roles           []string        `json:"roles"`
+		AuthorizedParty string          `json:"azp"`
+		NotBefore       int64           `json:"nbf"`
+		Events          json.RawMessage `json:"events"`
 	}
-	if verifiedToken.Claims(&extraClaims) != nil || verifiedToken.Subject == "" || verifiedToken.Issuer != verifier.expectedIssuer || extraClaims.Events != nil {
+	if verifiedToken.Claims(&extraClaims) != nil || verifiedToken.Issuer != verifier.expectedIssuer || extraClaims.Events != nil {
 		return Identity{}, errInvalidToken
 	}
 	now := time.Now()
 	if verifiedToken.IssuedAt.IsZero() || verifiedToken.IssuedAt.After(now.Add(clockSkew)) || extraClaims.NotBefore > now.Add(clockSkew).Unix() {
 		return Identity{}, errInvalidToken
 	}
-	return Identity{Subject: verifiedToken.Subject, Email: extraClaims.Email, Groups: extraClaims.Groups, Roles: extraClaims.Roles, expiresAt: verifiedToken.Expiry}, nil
+	if verifiedToken.Subject != "" {
+		return Identity{Subject: verifiedToken.Subject, Email: extraClaims.Email, Groups: extraClaims.Groups, Roles: extraClaims.Roles, expiresAt: verifiedToken.Expiry}, nil
+	}
+	// A client token names no person: it carries neither groups nor an email,
+	// and its permissions come from the policy's client list, never from claims.
+	if extraClaims.AuthorizedParty == "" || extraClaims.Email != "" || len(extraClaims.Groups) != 0 || len(extraClaims.Roles) != 0 {
+		return Identity{}, errInvalidToken
+	}
+	return Identity{Subject: extraClaims.AuthorizedParty, Client: true, expiresAt: verifiedToken.Expiry}, nil
 }
 
 // authenticateRequest is usable before an HTTP or WebSocket handler.

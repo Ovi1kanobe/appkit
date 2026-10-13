@@ -54,11 +54,14 @@ const membersGroup = "starter-members"
 const memberRole = "member"
 
 // newPolicy defines the application's roles and permissions. Each system adds
-// its permission constants from api/access to the roles as it is added.
+// its permission constants from api/access to the roles as it is added. The
+// last map lists the Rauthy clients of applications that call this one, by
+// client ID, with the roles each gets; nil when no application calls it.
 func newPolicy() (*authz.Policy, error) {
 	return authz.New(
 		map[string][]string{memberRole: {}},
 		map[string][]string{membersGroup: {memberRole}},
+		nil,
 	)
 }
 

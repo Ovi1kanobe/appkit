@@ -148,6 +148,31 @@ func TestAuthenticate(t *testing.T) {
 	}
 }
 
+// TestAuthenticateClient checks client credentials tokens: no subject, the
+// client in azp, and the application in the audience through a resource.
+func TestAuthenticateClient(t *testing.T) {
+	fixture := newProvider(t)
+	client := func() map[string]any {
+		return map[string]any{"iss": fixture.server.URL, "aud": []string{"notes", "app"}, "azp": "notes", "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix()}
+	}
+	actor, err := fixture.verifier.authenticate(context.Background(), sign(t, fixture.key, "first", "at+jwt", client()))
+	if err != nil || !actor.Client || actor.Subject != "notes" || actor.Email != "" || len(actor.Groups) != 0 {
+		t.Fatalf("client token: %v %+v", err, actor)
+	}
+	for name, change := range map[string]func(map[string]any){
+		"not addressed to this application": func(c map[string]any) { c["aud"] = "notes" },
+		"no authorized party":               func(c map[string]any) { delete(c, "azp") },
+		"groups without a subject":          func(c map[string]any) { c["groups"] = []string{"operators"} },
+		"email without a subject":           func(c map[string]any) { c["email"] = "notes@example.com" },
+	} {
+		claims := client()
+		change(claims)
+		if _, err := fixture.verifier.authenticate(context.Background(), sign(t, fixture.key, "first", "at+jwt", claims)); !errors.Is(err, errInvalidToken) {
+			t.Fatalf("%s: got %v", name, err)
+		}
+	}
+}
+
 func TestRequestAndContext(t *testing.T) {
 	fixture := newProvider(t)
 	raw := sign(t, fixture.key, "first", "at+jwt", fixture.claims())

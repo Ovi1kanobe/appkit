@@ -9,12 +9,14 @@ import (
 	"time"
 )
 
-// Identity is the authenticated person on a request: the provider's claims plus
-// the permissions the application's policy grants their groups, resolved once
-// when the identity is attached. Subject is the provider's canonical OIDC sub,
-// never an email address.
+// Identity is the authenticated caller of a request: the provider's claims plus
+// the permissions the application's policy grants, resolved once when the
+// identity is attached. For a person, Subject is the provider's canonical OIDC
+// sub, never an email address. For a calling application, Client is true and
+// Subject is its Rauthy client ID.
 type Identity struct {
 	Subject     string   `json:"subject"`
+	Client      bool     `json:"client,omitempty"`
 	Email       string   `json:"email,omitempty"`
 	Groups      []string `json:"groups,omitempty"`
 	Roles       []string `json:"roles,omitempty"`

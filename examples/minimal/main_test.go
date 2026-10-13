@@ -120,14 +120,27 @@ func TestRoutes(t *testing.T) {
 			t.Fatalf("%s: %d %q, want %d containing %q", step.name, status, body, step.status, step.contains)
 		}
 	}
-	request, _ := http.NewRequest("GET", app.URL+"/api/status", nil)
-	request.Header.Set("Authorization", "Bearer "+provider.AccessToken(t, alice))
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
-	if response.StatusCode != 200 {
-		t.Fatalf("bearer status: %d", response.StatusCode)
+	// Bearer routes serve a person's access token and, through a client
+	// credentials token addressed to this application, a calling application.
+	for _, step := range []struct {
+		name   string
+		token  string
+		status int
+	}{
+		{"person", provider.AccessToken(t, alice), 200},
+		{"listed client", provider.ClientToken(t, monitorClient, provider.ClientID), 200},
+		{"unlisted client", provider.ClientToken(t, "stranger", provider.ClientID), 403},
+		{"client token for another application", provider.ClientToken(t, monitorClient, "billing"), 401},
+	} {
+		request, _ := http.NewRequest("GET", app.URL+"/api/status", nil)
+		request.Header.Set("Authorization", "Bearer "+step.token)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != step.status {
+			t.Fatalf("bearer %s: %d, want %d", step.name, response.StatusCode, step.status)
+		}
 	}
 }

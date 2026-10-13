@@ -58,14 +58,22 @@ const (
 	adminGroup  = "example-admins"
 )
 
-// newPolicy defines the application's roles and permissions.
+// The Rauthy client of another application that calls this one, by its client
+// ID. Its token is accepted only when Rauthy lists this application's client
+// ID under that client's allowed resources.
+const monitorClient = "monitor"
+
+// newPolicy defines the application's roles and permissions: what each group
+// grants a person, and what each client grants a calling application.
 func newPolicy() (*authz.Policy, error) {
 	return authz.New(
 		map[string][]string{
-			"member": {access.DiagnosticsRead, access.NotesRead, access.NotesWrite},
-			"admin":  {access.EmailWrite},
+			"member":  {access.DiagnosticsRead, access.NotesRead, access.NotesWrite},
+			"admin":   {access.EmailWrite},
+			"monitor": {access.DiagnosticsRead},
 		},
 		map[string][]string{memberGroup: {"member"}, adminGroup: {"admin"}},
+		map[string][]string{monitorClient: {"monitor"}},
 	)
 }
 
