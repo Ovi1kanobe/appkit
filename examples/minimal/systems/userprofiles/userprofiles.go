@@ -43,10 +43,11 @@ func (system *System) Record(ctx context.Context, subject, email string) error {
 	if strings.TrimSpace(subject) == "" {
 		return ErrInvalid
 	}
+	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := system.database.ExecContext(ctx,
-		`INSERT INTO user_profiles (subject, email, updated_at) VALUES (?, ?, ?)
+		`INSERT INTO user_profiles (subject, email, created_at, updated_at) VALUES (?, ?, ?, ?)
 		 ON CONFLICT (subject) DO UPDATE SET email = excluded.email, updated_at = excluded.updated_at`,
-		subject, email, time.Now().UTC().Format(time.RFC3339))
+		subject, email, now, now)
 	return err
 }
 
