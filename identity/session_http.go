@@ -337,8 +337,8 @@ func (s *Sessions) sessionJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var app any
-	if s.config.AppInfo != nil {
-		info, err := s.config.AppInfo(r, actor)
+	if s.config.OnSessionRequest != nil {
+		info, err := s.config.OnSessionRequest(r, actor)
 		if err != nil {
 			http.Error(w, "session unavailable", 503)
 			return

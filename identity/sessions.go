@@ -30,9 +30,11 @@ type SessionConfig struct {
 	DatabasePath                   string
 	Policy                         *authz.Policy
 	Lifetime                       time.Duration // Zero means eight hours; fixed from sign-in, never sliding.
-	// AppInfo, when set, runs on each signed-in /auth/session request and its result is
-	// sent as "app", so pages load per-person state in the same request; an error answers 503.
-	AppInfo func(r *http.Request, actor Identity) (any, error)
+	// OnSessionRequest, when set, runs on each signed-in /auth/session request, which
+	// every page makes as it loads, so the app can record that the person is here.
+	// What it returns is sent as "app", so pages load per-person state in the same
+	// request; an error answers 503.
+	OnSessionRequest func(r *http.Request, actor Identity) (any, error)
 }
 
 // Sessions owns browser authentication and its SQLite connection. Call Close on

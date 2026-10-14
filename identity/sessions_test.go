@@ -425,10 +425,10 @@ func TestSessionExpiryAndEvents(t *testing.T) {
 	status(t, f.request("GET", "/protected", cookie, nil, ""), 401)
 }
 
-func TestSessionAppInfo(t *testing.T) {
+func TestSessionOnSessionRequest(t *testing.T) {
 	f := newSessionFixture(t, 0, "")
 	f.sessions.Close()
-	f.config.AppInfo = func(r *http.Request, actor identity.Identity) (any, error) {
+	f.config.OnSessionRequest = func(r *http.Request, actor identity.Identity) (any, error) {
 		if actor.Subject == "" {
 			t.Fatal("app info called without an identity")
 		}
@@ -443,7 +443,7 @@ func TestSessionAppInfo(t *testing.T) {
 		t.Fatalf("app info while signed out: %s", body)
 	}
 	f.sessions.Close()
-	f.config.AppInfo = func(*http.Request, identity.Identity) (any, error) { return nil, errors.New("down") }
+	f.config.OnSessionRequest = func(*http.Request, identity.Identity) (any, error) { return nil, errors.New("down") }
 	f.open()
 	status(t, f.request("GET", "/auth/session", cookie, nil, ""), 503)
 }

@@ -79,7 +79,7 @@ func TestPreview(t *testing.T) {
 	go wsapi.PublishStatus(ctx, hub, diagnosticSystem)
 	sessions, err := identity.NewSessions(ctx, identity.SessionConfig{
 		Issuer: provider.Issuer, ClientID: provider.ClientID, Origin: origin,
-		DatabasePath: filepath.Join(t.TempDir(), "sessions.sqlite"), Policy: policy, AppInfo: recordProfile(profiles),
+		DatabasePath: filepath.Join(t.TempDir(), "sessions.sqlite"), Policy: policy, OnSessionRequest: recordProfile(profiles),
 	})
 	if err != nil {
 		t.Fatal(err)

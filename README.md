@@ -92,7 +92,7 @@ There is no automatic sign-in.
 
 AppKit owns `/auth/login`, `/auth/callback`, `/auth/logout`, `/auth/backchannel`, `/auth/session`, and `/auth/events`.
 The session endpoint returns `{ "user": null, "permissions": [] }` when signed out, otherwise the identity and permissions resolved through the application's policy.
-`SessionConfig.AppInfo`, when set, adds its result to that body as `app`, so pages get display names, preferences, or other per-person state in the same request.
+`SessionConfig.OnSessionRequest`, when set, runs on each signed-in session request, which every page makes as it loads, so the app can record that the person is here; its result is added to that body as `app`, so pages get display names, preferences, or other per-person state in the same request.
 The event stream emits `signed-out` when the session ends.
 A single-page app reads `/auth/session` for its state and listens to `/auth/events` to switch to signed out immediately.
 
@@ -224,7 +224,7 @@ Multiple groups/roles union permissions; unknown groups and unlisted clients gra
 Permissions say what a role may do; the application's own resource rules decide which records that applies to.
 Rauthy groups are shared by every application, so start each group name with the application name (`notes-admins`, `billing-admins`).
 
-Applications keep their own profile of each person, keyed by `Identity.Subject` and refreshed through `SessionConfig.AppInfo`.
+Applications keep their own profile of each person, keyed by `Identity.Subject` and refreshed through `SessionConfig.OnSessionRequest`.
 
 ## Service calls
 

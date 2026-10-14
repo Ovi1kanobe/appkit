@@ -120,7 +120,7 @@ func run(appKit config.AppKit) error {
 		return err
 	}
 	sessionConfig.Policy = policy
-	sessionConfig.AppInfo = recordProfile(profiles)
+	sessionConfig.OnSessionRequest = recordProfile(profiles)
 	sessions, err := identity.NewSessions(ctx, sessionConfig)
 	if err != nil {
 		return err
