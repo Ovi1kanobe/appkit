@@ -12,10 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Ovi1kanobe/appkit/api"
 	"github.com/Ovi1kanobe/appkit/schema"
 )
 
-var ErrInvalid = errors.New("A profile needs a subject.")
+var ErrInvalid = api.Invalid("A profile needs a subject.")
 
 // UserProfile is what the application knows about one person.
 type UserProfile struct {

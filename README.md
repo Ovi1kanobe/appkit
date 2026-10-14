@@ -8,6 +8,7 @@ Requires Go 1.26 or newer.
 
 | Package | Owns |
 | --- | --- |
+| `api` | JSON responses, and system errors declared with the status they mean, so handlers never map errors |
 | `identity` | OIDC discovery, cached JWKS verification, bearer authentication, browser sessions, context identity, back-channel logout, service calls between applications |
 | `authz` | External group, and calling application, to application role to permission mapping |
 | `realtime` | Authenticated WebSocket connections, subscriptions, safe writes, a coalescing publisher, cleanup |
@@ -45,6 +46,22 @@ if err := environment.Check(); err != nil {
 | `SESSION_DATABASE` | no, default `appkit-sessions.sqlite` | AppKit session database file |
 
 Environment variables hold deployment values and secrets only; everything else, including roles and permissions, belongs in code.
+
+## Errors
+
+A system declares each error a person can be shown with `api.Invalid`, `api.Forbidden`, `api.NotFound`, or `api.Conflict`, whose text is the sentence the person reads.
+Handlers answer with `api.WriteJSON` and `api.WriteError`; the latter sends a declared error's sentence with its status, even when wrapped, and any other error as a logged 500 with a generic message.
+
+```go
+var ErrNotFound = api.NotFound("That note no longer exists.")
+
+note, err := system.Get(ctx, id)
+if err != nil {
+    api.WriteError(writer, request, err) // 404 {"error":"That note no longer exists."}
+    return
+}
+api.WriteJSON(writer, http.StatusOK, view)
+```
 
 ## Browser sessions
 

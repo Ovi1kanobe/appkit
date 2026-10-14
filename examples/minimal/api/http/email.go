@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/Ovi1kanobe/appkit/api"
+
 	"github.com/Ovi1kanobe/appkit/examples/minimal/api/access"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/systems/email"
 )
@@ -19,11 +21,11 @@ func EmailKeyStatus(system *email.System) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		status, err := system.KeyStatus(request.Context())
 		if err != nil {
-			writeError(writer, request, err)
+			api.WriteError(writer, request, err)
 			return
 		}
 		view, _ := access.ViewEmailKey(viewer(request), status)
-		writeJSON(writer, http.StatusOK, view)
+		api.WriteJSON(writer, http.StatusOK, view)
 	})
 }
 
@@ -34,11 +36,11 @@ func SetEmailKey(system *email.System) http.Handler {
 			APIKey string `json:"api_key"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 4096)).Decode(&input); err != nil {
-			writeError(writer, request, email.ErrInvalid)
+			api.WriteError(writer, request, email.ErrInvalid)
 			return
 		}
 		if err := system.SetAPIKey(request.Context(), email.Actor{Subject: viewer(request).Subject}, input.APIKey); err != nil {
-			writeError(writer, request, err)
+			api.WriteError(writer, request, err)
 			return
 		}
 		writer.WriteHeader(http.StatusNoContent)

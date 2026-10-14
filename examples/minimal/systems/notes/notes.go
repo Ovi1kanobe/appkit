@@ -11,12 +11,13 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Ovi1kanobe/appkit/api"
 	"github.com/Ovi1kanobe/appkit/schema"
 )
 
 var (
-	ErrInvalid  = errors.New("A note needs between 1 and 500 characters.")
-	ErrNotFound = errors.New("That note no longer exists.")
+	ErrInvalid  = api.Invalid("A note needs between 1 and 500 characters.")
+	ErrNotFound = api.NotFound("That note no longer exists.")
 )
 
 const maximumLength = 500

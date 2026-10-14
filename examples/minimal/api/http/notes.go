@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/Ovi1kanobe/appkit/api"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/api/access"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/systems/notes"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/systems/userprofiles"
@@ -28,7 +29,7 @@ func ListNotes(system *notes.System, profiles *userprofiles.System) http.Handler
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		list, err := system.List(request.Context())
 		if err != nil {
-			writeError(writer, request, err)
+			api.WriteError(writer, request, err)
 			return
 		}
 		authors := make([]string, 0, len(list))
@@ -37,7 +38,7 @@ func ListNotes(system *notes.System, profiles *userprofiles.System) http.Handler
 		}
 		authorProfiles, err := profiles.Lookup(request.Context(), authors)
 		if err != nil {
-			writeError(writer, request, err)
+			api.WriteError(writer, request, err)
 			return
 		}
 		views := []access.Note{}
@@ -46,7 +47,7 @@ func ListNotes(system *notes.System, profiles *userprofiles.System) http.Handler
 				views = append(views, view)
 			}
 		}
-		writeJSON(writer, http.StatusOK, views)
+		api.WriteJSON(writer, http.StatusOK, views)
 	})
 }
 
@@ -57,22 +58,22 @@ func CreateNote(system *notes.System, profiles *userprofiles.System) http.Handle
 			Text string `json:"text"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 4096)).Decode(&input); err != nil {
-			writeError(writer, request, notes.ErrInvalid)
+			api.WriteError(writer, request, notes.ErrInvalid)
 			return
 		}
 		person := viewer(request)
 		note, err := system.Create(request.Context(), notes.Actor{Subject: person.Subject}, input.Text)
 		if err != nil {
-			writeError(writer, request, err)
+			api.WriteError(writer, request, err)
 			return
 		}
 		authorProfiles, err := profiles.Lookup(request.Context(), []string{person.Subject})
 		if err != nil {
-			writeError(writer, request, err)
+			api.WriteError(writer, request, err)
 			return
 		}
 		view, _ := access.ViewNote(person, note, authorProfiles[person.Subject])
-		writeJSON(writer, http.StatusCreated, view)
+		api.WriteJSON(writer, http.StatusCreated, view)
 	})
 }
 
@@ -81,20 +82,20 @@ func DeleteNote(system *notes.System) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		id, err := strconv.ParseInt(request.PathValue("id"), 10, 64)
 		if err != nil {
-			writeError(writer, request, notes.ErrNotFound)
+			api.WriteError(writer, request, notes.ErrNotFound)
 			return
 		}
 		note, err := system.Get(request.Context(), id)
 		if err != nil {
-			writeError(writer, request, err)
+			api.WriteError(writer, request, err)
 			return
 		}
 		if !access.CanDeleteNote(viewer(request), note) {
-			writeError(writer, request, access.ErrNotAuthor)
+			api.WriteError(writer, request, access.ErrNotAuthor)
 			return
 		}
 		if err := system.Delete(request.Context(), id); err != nil {
-			writeError(writer, request, err)
+			api.WriteError(writer, request, err)
 			return
 		}
 		writer.WriteHeader(http.StatusNoContent)

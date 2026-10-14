@@ -3,7 +3,7 @@
 package access
 
 import (
-	"errors"
+	"github.com/Ovi1kanobe/appkit/api"
 
 	"github.com/Ovi1kanobe/appkit/examples/minimal/systems/notes"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/systems/userprofiles"
@@ -16,7 +16,7 @@ const (
 	NotesWrite = "notes.write"
 )
 
-var ErrNotAuthor = errors.New("Only the author may delete this note.")
+var ErrNotAuthor = api.Forbidden("Only the author may delete this note.")
 
 // Note is what a person sees of a note: the note, its author's current email,
 // and whether it is theirs.

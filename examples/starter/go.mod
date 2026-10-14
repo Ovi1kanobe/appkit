@@ -2,7 +2,7 @@ module github.com/Ovi1kanobe/appkit/examples/starter
 
 go 1.26.0
 
-require github.com/Ovi1kanobe/appkit v0.4.0
+require github.com/Ovi1kanobe/appkit v0.6.0
 
 require (
 	github.com/coreos/go-oidc/v3 v3.21.0 // indirect

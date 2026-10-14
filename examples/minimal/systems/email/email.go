@@ -12,13 +12,14 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Ovi1kanobe/appkit/api"
 	"github.com/Ovi1kanobe/appkit/encryption"
 	"github.com/Ovi1kanobe/appkit/schema"
 )
 
 var (
-	ErrInvalid = errors.New("An API key needs between 8 and 500 characters and no spaces.")
-	ErrNotSet  = errors.New("The email provider API key is not set.")
+	ErrInvalid = api.Invalid("An API key needs between 8 and 500 characters and no spaces.")
+	ErrNotSet  = api.Conflict("The email provider API key is not set.")
 )
 
 // apiKeyLabel binds the encrypted key to its table, column, and row.
