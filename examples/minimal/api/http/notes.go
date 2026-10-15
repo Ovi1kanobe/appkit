@@ -1,7 +1,6 @@
 package http
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -57,8 +56,8 @@ func CreateNote(system *notes.System, profiles *userprofiles.System) http.Handle
 		var input struct {
 			Text string `json:"text"`
 		}
-		if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 4096)).Decode(&input); err != nil {
-			api.WriteError(writer, request, notes.ErrInvalid)
+		if err := api.ReadJSON(request, &input); err != nil {
+			api.WriteError(writer, request, err)
 			return
 		}
 		person := viewer(request)

@@ -63,6 +63,17 @@ if err != nil {
 api.WriteJSON(writer, http.StatusOK, view)
 ```
 
+## Request bodies
+
+Wrap the mux once, at the end of the application's `routes`, so every route has a body limit and no handler reads without bound:
+
+```go
+return api.LimitBodies(api.DefaultBodyLimit, mux)
+```
+
+A route that needs another limit, such as an upload, puts `api.LimitBody(limit, handler)` anywhere on its line.
+Handlers decode a body with `api.ReadJSON(request, &input)`, which reads one JSON value and nothing after it, and returns the error `api.WriteError` answers with 413 for a body over its limit or 400 for one that is not valid JSON.
+
 ## Browser sessions
 
 ```go

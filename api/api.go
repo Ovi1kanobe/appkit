@@ -1,5 +1,5 @@
-// Package api answers HTTP requests with JSON, and with the status a system's
-// error carries. A system declares each error a person can be shown with
+// Package api reads and answers HTTP requests: JSON bodies within a limit, and
+// errors with the status a system's error carries. A system declares each error a person can be shown with
 // Invalid, Forbidden, NotFound, or Conflict, whose text is the sentence the
 // person reads. WriteError sends that sentence with the matching status, and
 // any other error as a logged 500 with a generic message, so no internal
@@ -9,6 +9,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 )
@@ -35,6 +36,36 @@ func NotFound(text string) error { return &statusError{status: http.StatusNotFou
 // Conflict is an error for a change the current state refuses, answered with 409.
 func Conflict(text string) error { return &statusError{status: http.StatusConflict, text: text} }
 
+// ErrNotJSON is the answer when a request body cannot be decoded.
+var ErrNotJSON = Invalid("The request body is not valid JSON.")
+
+// ReadJSON decodes the request body into value: one JSON value and nothing
+// after it. A body over its limit returns the *http.MaxBytesError, which
+// WriteError answers with 413; anything else that fails returns ErrNotJSON.
+func ReadJSON(request *http.Request, value any) error {
+	decoder := json.NewDecoder(request.Body)
+	if err := decoder.Decode(value); err != nil {
+		return notJSON(err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return ErrNotJSON
+		}
+		return notJSON(err)
+	}
+	return nil
+}
+
+// notJSON keeps a too-large error, which carries its own status, and turns
+// every other decoding failure into ErrNotJSON.
+func notJSON(err error) error {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		return err
+	}
+	return ErrNotJSON
+}
+
 // WriteJSON answers with status and value encoded as JSON.
 func WriteJSON(writer http.ResponseWriter, status int, value any) {
 	writer.Header().Set("Content-Type", "application/json")
@@ -44,12 +75,17 @@ func WriteJSON(writer http.ResponseWriter, status int, value any) {
 
 // WriteError answers with {"error": text}. An error made by Invalid,
 // Forbidden, NotFound, or Conflict, even when wrapped, is sent with its own
-// text and status. Any other error is logged with the request and answered
-// with 500 and a generic message.
+// text and status; a body over its limit is 413. Any other error is logged
+// with the request and answered with 500 and a generic message.
 func WriteError(writer http.ResponseWriter, request *http.Request, err error) {
 	var known *statusError
 	if errors.As(err, &known) {
 		WriteJSON(writer, known.status, map[string]string{"error": known.text})
+		return
+	}
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		WriteJSON(writer, http.StatusRequestEntityTooLarge, map[string]string{"error": "The request is too large."})
 		return
 	}
 	slog.ErrorContext(request.Context(), "request failed", "method", request.Method, "path", request.URL.Path, "error", err)

@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Ovi1kanobe/appkit/api"
 	"github.com/Ovi1kanobe/appkit/authz"
 	"github.com/Ovi1kanobe/appkit/config"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/api/access"
@@ -168,7 +169,7 @@ func recordProfile(profiles *userprofiles.System) func(*http.Request, identity.I
 }
 
 // routes mounts every route behind its authentication and permission.
-func routes(sessions *identity.Sessions, profiles *userprofiles.System, diagnosticSystem *diagnostics.System, noteSystem *notes.System, emailSystem *email.System, hub *realtime.Hub, pages http.Handler) *http.ServeMux {
+func routes(sessions *identity.Sessions, profiles *userprofiles.System, diagnosticSystem *diagnostics.System, noteSystem *notes.System, emailSystem *email.System, hub *realtime.Hub, pages http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	sessions.Routes(mux)
 	mux.Handle(httpapi.HealthPattern, httpapi.Health())
@@ -184,5 +185,5 @@ func routes(sessions *identity.Sessions, profiles *userprofiles.System, diagnost
 	mux.Handle(httpapi.DashboardPattern, sessions.Require(pages))
 	mux.Handle(httpapi.SettingsPattern, sessions.Require(pages))
 	mux.Handle(httpapi.FrontendPattern, pages)
-	return mux
+	return api.LimitBodies(api.DefaultBodyLimit, mux)
 }

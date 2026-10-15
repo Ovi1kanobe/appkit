@@ -1,7 +1,6 @@
 package http
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/Ovi1kanobe/appkit/api"
@@ -35,8 +34,8 @@ func SetEmailKey(system *email.System) http.Handler {
 		var input struct {
 			APIKey string `json:"api_key"`
 		}
-		if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 4096)).Decode(&input); err != nil {
-			api.WriteError(writer, request, email.ErrInvalid)
+		if err := api.ReadJSON(request, &input); err != nil {
+			api.WriteError(writer, request, err)
 			return
 		}
 		if err := system.SetAPIKey(request.Context(), email.Actor{Subject: viewer(request).Subject}, input.APIKey); err != nil {
