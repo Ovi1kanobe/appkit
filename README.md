@@ -49,8 +49,10 @@ Environment variables hold deployment values and secrets only; everything else, 
 
 ## Errors
 
-A system declares each error a person can be shown with `api.Invalid`, `api.Forbidden`, `api.NotFound`, or `api.Conflict`, whose text is the sentence the person reads.
+A system declares each error a person can be shown with `api.Invalid`, `api.Forbidden`, `api.NotFound`, `api.Conflict`, or `api.Unavailable`, whose text is the sentence the person reads.
+`api.Unavailable` is for an outside service that did not answer, so the person should try again later.
 Handlers answer with `api.WriteJSON` and `api.WriteError`; the latter sends a declared error's sentence with its status, even when wrapped, and any other error as a logged 500 with a generic message.
+An `api.Unavailable` error is also logged as a warning with everything it wraps, so the operator sees what did not answer.
 
 ```go
 var ErrNotFound = api.NotFound("That note no longer exists.")
