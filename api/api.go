@@ -1,9 +1,9 @@
 // Package api reads and answers HTTP requests: JSON bodies within a limit, and
 // errors with the status a system's error carries. A system declares each error a person can be shown with
-// Invalid, Forbidden, NotFound, or Conflict, whose text is the sentence the
-// person reads. WriteError sends that sentence with the matching status, and
-// any other error as a logged 500 with a generic message, so no internal
-// detail reaches a browser.
+// Invalid, Forbidden, NotFound, Conflict, or Unavailable, whose text is the
+// sentence the person reads. WriteError sends that sentence with the matching
+// status, and any other error as a logged 500 with a generic message, so no
+// internal detail reaches a browser.
 package api
 
 import (
@@ -35,6 +35,12 @@ func NotFound(text string) error { return &statusError{status: http.StatusNotFou
 
 // Conflict is an error for a change the current state refuses, answered with 409.
 func Conflict(text string) error { return &statusError{status: http.StatusConflict, text: text} }
+
+// Unavailable is an error for a service the system depends on that did not
+// answer, so the person should try again later, answered with 503.
+func Unavailable(text string) error {
+	return &statusError{status: http.StatusServiceUnavailable, text: text}
+}
 
 // ErrNotJSON is the answer when a request body cannot be decoded.
 var ErrNotJSON = Invalid("The request body is not valid JSON.")
@@ -74,12 +80,17 @@ func WriteJSON(writer http.ResponseWriter, status int, value any) {
 }
 
 // WriteError answers with {"error": text}. An error made by Invalid,
-// Forbidden, NotFound, or Conflict, even when wrapped, is sent with its own
-// text and status; a body over its limit is 413. Any other error is logged
-// with the request and answered with 500 and a generic message.
+// Forbidden, NotFound, Conflict, or Unavailable, even when wrapped, is sent
+// with its own text and status; an Unavailable one is also logged as a
+// warning with everything it wraps, which says what did not answer. A body
+// over its limit is 413. Any other error is logged with the request and
+// answered with 500 and a generic message.
 func WriteError(writer http.ResponseWriter, request *http.Request, err error) {
 	var known *statusError
 	if errors.As(err, &known) {
+		if known.status == http.StatusServiceUnavailable {
+			slog.WarnContext(request.Context(), "request unavailable", "method", request.Method, "path", request.URL.Path, "error", err)
+		}
 		WriteJSON(writer, known.status, map[string]string{"error": known.text})
 		return
 	}

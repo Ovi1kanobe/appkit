@@ -20,6 +20,7 @@ func TestWriteError(t *testing.T) {
 		{"forbidden", Forbidden("Only the author may delete this note."), 403, `{"error":"Only the author may delete this note."}`},
 		{"not found", NotFound("That note no longer exists."), 404, `{"error":"That note no longer exists."}`},
 		{"conflict", Conflict("That tool is on loan."), 409, `{"error":"That tool is on loan."}`},
+		{"unavailable", fmt.Errorf("price: %w (timeout)", Unavailable("No price right now. Try again in a moment.")), 503, `{"error":"No price right now. Try again in a moment."}`},
 		{"wrapped", fmt.Errorf("deleting note 7: %w", NotFound("That note no longer exists.")), 404, `{"error":"That note no longer exists."}`},
 		{"too large", &http.MaxBytesError{Limit: 8}, 413, `{"error":"The request is too large."}`},
 		{"unexpected", errors.New("database is locked"), 500, `{"error":"Something went wrong."}`},
