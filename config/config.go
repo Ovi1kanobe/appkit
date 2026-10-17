@@ -17,8 +17,18 @@ import (
 // Environment collects declarations. AppKit packages declare their own
 // variables through it, and the application adds its own.
 type Environment struct {
-	defaults [][2]string // name, default
-	problems []string
+	declarations []Declaration
+	defaults     [][2]string // name, default
+	problems     []string
+}
+
+// Declaration is one variable the application reads, as declared through
+// Required or Optional.
+type Declaration struct {
+	Name        string
+	Description string
+	Required    bool
+	Default     string // optional variables only
 }
 
 // New starts an empty set of declarations read from the process environment.
@@ -28,6 +38,7 @@ func New() *Environment {
 
 // Required declares a variable that must be set and returns its value.
 func (environment *Environment) Required(name, description string) string {
+	environment.declarations = append(environment.declarations, Declaration{Name: name, Description: description, Required: true})
 	value, _ := os.LookupEnv(name)
 	if strings.TrimSpace(value) == "" {
 		environment.problems = append(environment.problems, fmt.Sprintf("%s is not set: %s", name, description))
@@ -37,11 +48,18 @@ func (environment *Environment) Required(name, description string) string {
 
 // Optional declares a variable with a default and returns its value.
 func (environment *Environment) Optional(name, fallback, description string) string {
+	environment.declarations = append(environment.declarations, Declaration{Name: name, Description: description, Default: fallback})
 	if value, _ := os.LookupEnv(name); strings.TrimSpace(value) != "" {
 		return value
 	}
 	environment.defaults = append(environment.defaults, [2]string{name, fallback})
 	return fallback
+}
+
+// Declarations returns every variable declared so far, in declaration order,
+// so a command can list or ask for them without starting the application.
+func (environment *Environment) Declarations() []Declaration {
+	return append([]Declaration(nil), environment.declarations...)
 }
 
 // Invalid records a declared variable whose value cannot be used.

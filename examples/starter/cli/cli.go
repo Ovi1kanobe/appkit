@@ -1,5 +1,5 @@
 // Package cli turns the binary's arguments into one action: serve, version,
-// update, or help. Operator commands are added here, one function each,
+// update, install, or help. Operator commands are added here, one function each,
 // calling the same systems the routes use.
 package cli
 
@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/Ovi1kanobe/appkit/config"
+	"github.com/Ovi1kanobe/appkit/install"
 	"github.com/Ovi1kanobe/appkit/selfupdate"
 )
 
@@ -21,8 +23,9 @@ const (
 )
 
 // Run executes args and returns the process exit code. With no arguments it
-// calls serve and runs until that returns.
-func Run(args []string, serve func() error) int {
+// calls serve and runs until that returns. declare declares every variable
+// the application reads, so install can ask for each one.
+func Run(args []string, serve func() error, declare func(*config.Environment)) int {
 	command := ""
 	if len(args) > 0 {
 		command = args[0]
@@ -39,6 +42,8 @@ func Run(args []string, serve func() error) int {
 		return 0
 	case "update":
 		return update(args[1:])
+	case "install":
+		return installService(declare)
 	case "help", "--help", "-h":
 		usage(os.Stdout)
 		return 0
@@ -56,10 +61,30 @@ func usage(w io.Writer) {
   version            print the version
   update             install the latest release over this binary
   update --check     report whether a newer release exists
+  install            set this binary up as a systemd service, asking for each variable
   help               show this
 
 update reads a GitHub token for a private repository from --token or GITHUB_TOKEN.
+install runs as root on Linux and is safe to run again after an update.
 `, name)
+}
+
+func installService(declare func(*config.Environment)) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	environment := config.New()
+	declare(environment)
+	executable, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", name, err)
+		return 1
+	}
+	installer := install.Installer{Name: name, Declarations: environment.Declarations()}
+	if err := installer.Run(ctx, executable); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", name, err)
+		return 1
+	}
+	return 0
 }
 
 func update(args []string) int {

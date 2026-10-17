@@ -37,15 +37,21 @@ import (
 var frontendFiles embed.FS
 
 func main() {
-	os.Exit(cli.Run(os.Args[1:], serve))
+	os.Exit(cli.Run(os.Args[1:], serve, func(environment *config.Environment) { configure(environment) }))
+}
+
+// configure declares every variable the application reads. serve checks and
+// uses the values; install asks the operator for each one.
+func configure(environment *config.Environment) config.AppKit {
+	// AppKit declares its own variables; add the application's below with
+	// environment.Required or environment.Optional.
+	return environment.AppKit(config.Defaults{})
 }
 
 // serve reads the configuration and runs the server until it stops.
 func serve() error {
-	// AppKit declares its own variables; add the application's below with
-	// environment.Required or environment.Optional.
 	environment := config.New()
-	appKit := environment.AppKit(config.Defaults{})
+	appKit := configure(environment)
 	if err := environment.Check(); err != nil {
 		return err
 	}
