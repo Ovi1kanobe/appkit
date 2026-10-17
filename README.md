@@ -46,6 +46,7 @@ if err := environment.Check(); err != nil {
 | `SESSION_DATABASE` | no, default `appkit-sessions.sqlite` | AppKit session database file |
 
 Environment variables hold deployment values and secrets only; everything else, including roles and permissions, belongs in code.
+`Declarations()` lists every variable declared so far, with its description, whether it is required, and its default; the `install` command uses it to ask for each one.
 
 ## Errors
 
@@ -202,6 +203,23 @@ An app is one process listening on loopback behind a TLS reverse proxy, with `AP
 - **Secrets:** `RAUTHY_CLIENT_SECRET` and `APP_MASTER_KEY` are read from the environment and belong in a protected environment file, never in the repository.
 - **Master key:** give each application its own, and store a copy in a password manager before the app first encrypts anything; losing it loses every stored credential.
 - **Backups:** back up the application's own database, never together with its master key; the session database needs none, since losing it only signs everyone out.
+
+## Install
+
+`install.Installer` sets the running binary up as a systemd service on a Linux host; apps expose it as the `install` command, which runs as root:
+
+```sh
+curl -fsSLO https://github.com/<owner>/<app>/releases/latest/download/<app>-linux-amd64
+sudo ./<app>-linux-amd64 install
+```
+
+It creates the system user `<app>`, copies the binary to `/opt/<app>/<app>`, puts both databases under `/var/lib/<app>`, writes a hardened unit, enables it, and starts the service.
+An existing account with that name is used only when it is a dedicated system account, never root or one with a login shell.
+The environment file `/etc/<app>/<app>.env` is root-only and filled in by asking for each declared variable, in declaration order, with Enter keeping an optional variable's default.
+`APP_MASTER_KEY` is generated and `APP_ENV` is production, so neither is asked; the key is printed once when the command runs on a terminal, otherwise the summary says to copy it from the file.
+A variable whose name ends in `_SECRET`, `_KEY`, `_TOKEN`, `_PASSWORD`, `_PASS`, `_PASSPHRASE`, `_CREDENTIALS`, `_URL`, or `_DSN` is not shown while typed.
+Running `install` again keeps every value in the file, including a database path an operator moved, asks only for variables the binary now declares that the file lacks or leaves empty, rewrites the unit, and restarts the service.
+Values an operator adds to the file by hand are kept; comments are not.
 
 ## Releases and self-update
 
