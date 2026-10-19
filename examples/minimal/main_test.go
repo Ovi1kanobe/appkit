@@ -12,6 +12,7 @@ import (
 	"testing/fstest"
 
 	"github.com/Ovi1kanobe/appkit/encryption"
+	"github.com/Ovi1kanobe/appkit/examples/minimal/api/access"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/systems/diagnostics"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/systems/email"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/systems/notes"
@@ -119,6 +120,33 @@ func TestRoutes(t *testing.T) {
 		if status != step.status || !strings.Contains(body, step.contains) {
 			t.Fatalf("%s: %d %q, want %d containing %q", step.name, status, body, step.status, step.contains)
 		}
+	}
+	// A key a member made reaches the routes its scope covers as that member,
+	// is refused where its scope does not reach, and ends when revoked.
+	keyID, secret := provider.CreateKey(t, app.URL, aliceCookie, "ci", access.NotesRead)
+	withKey := func(method, path string) int {
+		t.Helper()
+		request, _ := http.NewRequest(method, app.URL+path, strings.NewReader(`{"text":"by key"}`))
+		request.Header.Set("Authorization", "Bearer "+secret)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		return response.StatusCode
+	}
+	if status := withKey("GET", "/api/notes"); status != 200 {
+		t.Fatalf("key with its scope: %d", status)
+	}
+	if status := withKey("POST", "/api/notes"); status != 403 {
+		t.Fatalf("key without the scope: %d", status)
+	}
+	if status, _ := send(aliceCookie, "DELETE", "/auth/keys/"+keyID, ""); status != 204 {
+		t.Fatalf("revoke: %d", status)
+	}
+	if status := withKey("GET", "/api/notes"); status != 401 {
+		t.Fatalf("revoked key: %d", status)
 	}
 	// Bearer routes serve a person's access token and, through a client
 	// credentials token addressed to this application, a calling application.

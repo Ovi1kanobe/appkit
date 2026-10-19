@@ -3,11 +3,13 @@
 import { useSyncExternalStore } from "react"
 
 export type User = { subject: string; email?: string }
+// Present only when the person may give an API key at least one permission.
+export type KeyOptions = { delegable: string[]; max_lifetime_seconds: number }
 export type Session =
   | { status: "loading" }
   | { status: "unavailable" }
   | { status: "signed-out" }
-  | { status: "signed-in"; user: User; permissions: string[]; refreshFailed: boolean }
+  | { status: "signed-in"; user: User; permissions: string[]; keys?: KeyOptions; refreshFailed: boolean }
 
 let current: Session = { status: "loading" }
 let events: EventSource | undefined
@@ -35,9 +37,15 @@ export async function refreshSession() {
   try {
     const response = await fetch("/auth/session", { cache: "no-store" })
     if (!response.ok) throw new Error(response.statusText)
-    const body = (await response.json()) as { user: User | null; permissions: string[] }
+    const body = (await response.json()) as { user: User | null; permissions: string[]; keys?: KeyOptions }
     if (!body.user) return signedOut()
-    update({ status: "signed-in", user: body.user, permissions: body.permissions, refreshFailed: false })
+    update({
+      status: "signed-in",
+      user: body.user,
+      permissions: body.permissions,
+      keys: body.keys,
+      refreshFailed: false,
+    })
     listenForSignOut()
   } catch {
     update(current.status === "signed-in" ? { ...current, refreshFailed: true } : { status: "unavailable" })
@@ -58,7 +66,11 @@ export function useSession(): Session {
 export function useSignedIn() {
   const session = useSession()
   if (session.status !== "signed-in") throw new Error("useSignedIn requires a signed-in session")
-  return { user: session.user, can: (permission: string) => session.permissions.includes(permission) }
+  return {
+    user: session.user,
+    keys: session.keys,
+    can: (permission: string) => session.permissions.includes(permission),
+  }
 }
 
 refreshSession()

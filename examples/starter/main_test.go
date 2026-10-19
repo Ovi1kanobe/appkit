@@ -53,12 +53,14 @@ func TestRoutes(t *testing.T) {
 	app.Config.Handler = routes(sessions, pages)
 
 	memberCookie := provider.SignIn(t, app.URL, identitytest.User{Subject: "sam", Email: "sam@example.test", Groups: []string{membersGroup}})
-	send := func(cookie *http.Cookie, method, path string) (int, string) {
+	send := func(cookie *http.Cookie, method, path, body string) (int, string) {
 		t.Helper()
-		request, err := http.NewRequest(method, app.URL+path, nil)
+		request, err := http.NewRequest(method, app.URL+path, strings.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
 		}
+		request.Header.Set("Origin", app.URL)
+		request.Header.Set("Content-Type", "application/json")
 		if cookie != nil {
 			request.AddCookie(cookie)
 		}
@@ -74,17 +76,23 @@ func TestRoutes(t *testing.T) {
 		name         string
 		cookie       *http.Cookie
 		method, path string
+		body         string
 		status       int
 		contains     string
 	}{
-		{"health without sign-in", nil, "GET", "/api/health", 200, `{"status":"ok"}`},
-		{"signed out session", nil, "GET", "/auth/session", 200, `"user":null`},
-		{"member signed in", memberCookie, "GET", "/auth/session", 200, `"sam"`},
-		{"page", nil, "GET", "/", 200, "app"},
+		{"health without sign-in", nil, "GET", "/api/health", "", 200, `{"status":"ok"}`},
+		{"signed out session", nil, "GET", "/auth/session", "", 200, `"user":null`},
+		{"member signed in", memberCookie, "GET", "/auth/session", "", 200, `"sam"`},
+		{"page", nil, "GET", "/", "", 200, "app"},
+		{"account page needs sign-in", nil, "GET", "/account", "", 401, `"error"`},
+		{"no keys while nothing is delegable", memberCookie, "POST", "/auth/keys", `{"name":"ci","scopes":["x"],"lifetime_seconds":60}`, 400, "does not issue keys"},
 	} {
-		status, body := send(step.cookie, step.method, step.path)
+		status, body := send(step.cookie, step.method, step.path, step.body)
 		if status != step.status || !strings.Contains(body, step.contains) {
 			t.Fatalf("%s: %d %q, want %d containing %q", step.name, status, body, step.status, step.contains)
+		}
+		if step.path == "/auth/session" && strings.Contains(body, `"keys"`) {
+			t.Fatalf("%s: keys offered while nothing is delegable: %s", step.name, body)
 		}
 	}
 	// The session request recorded the member's profile.

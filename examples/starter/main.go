@@ -62,12 +62,16 @@ const memberRole = "member"
 
 // newPolicy defines the application's roles and permissions. Each system adds
 // its permission constants from api/access to the roles as it is added. The
-// last map lists the Rauthy clients of applications that call this one, by
-// client ID, with the roles each gets; nil when no application calls it.
+// third map lists the Rauthy clients of applications that call this one, by
+// client ID, with the roles each gets; nil when no application calls it. The
+// last list names the permissions a person may give a key they make for a
+// tool; add them as systems are added, never one that moves money, changes
+// credentials or endpoints, or is irreversible.
 func newPolicy() (*authz.Policy, error) {
 	return authz.New(
 		map[string][]string{memberRole: {}},
 		map[string][]string{membersGroup: {memberRole}},
+		nil,
 		nil,
 	)
 }
@@ -152,6 +156,7 @@ func routes(sessions *identity.Sessions, pages http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	sessions.Routes(mux)
 	mux.Handle(httpapi.HealthPattern, httpapi.Health())
+	mux.Handle(httpapi.AccountPattern, sessions.Require(pages))
 	mux.Handle(httpapi.FrontendPattern, pages)
 	return api.LimitBodies(api.DefaultBodyLimit, mux)
 }

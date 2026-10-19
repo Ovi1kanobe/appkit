@@ -96,7 +96,7 @@ mux.Handle("GET /api/status", sessions.Bearer(identity.RequirePermission("diagno
 API and WebSocket errors from AppKit use the same `{"error": "..."}` body as applications.
 `Require`, `Optional`, and `Bearer` attach the identity with `Permissions` resolved by the configured policy, never stored: from its groups for a person, and from the policy's client list for a calling application (see Service calls).
 `identity.RequirePermission` answers 401 without an identity and 403 when `Identity.Can` is false; resource-level rules in the application use the same `Can`.
-Browser middleware ignores bearer credentials; bearer middleware ignores cookies.
+`Require` and `Optional` accept a session cookie or a personal key in a `Bearer` header; `Bearer` accepts a Rauthy access token; each refuses the other credentials, and a `Bearer` header on a browser route is never treated as anonymous.
 Bearer-only apps can use `identity.New` and `Verifier.Middleware` without any SQLite dependency; that identity carries no permissions.
 
 Sign-in is `<a href="/auth/login">Sign in</a>`.
@@ -104,8 +104,8 @@ Sign-out is `<form method="post" action="/auth/logout"><button>Sign out</button>
 An optional `next` parameter selects a local return path.
 There is no automatic sign-in.
 
-AppKit owns `/auth/login`, `/auth/callback`, `/auth/logout`, `/auth/backchannel`, `/auth/session`, and `/auth/events`.
-The session endpoint returns `{ "user": null, "permissions": [] }` when signed out, otherwise the identity and permissions resolved through the application's policy.
+AppKit owns `/auth/login`, `/auth/callback`, `/auth/logout`, `/auth/backchannel`, `/auth/session`, `/auth/events`, `/auth/keys`, and `/auth/users/{subject}/keys`.
+The session endpoint returns `{ "user": null, "permissions": [] }` when signed out, otherwise the identity and permissions resolved through the application's policy, and `keys` with what the person may give a key (see Personal keys).
 `SessionConfig.OnSessionRequest`, when set, runs on each signed-in session request, which every page makes as it loads, so the app can record that the person is here; its result is added to that body as `app`, so pages get display names, preferences, or other per-person state in the same request.
 The event stream emits `signed-out` when the session ends.
 A single-page app reads `/auth/session` for its state and listens to `/auth/events` to switch to signed out immediately.
@@ -122,7 +122,7 @@ Only opaque session cookies reach the browser; provider tokens stay on the serve
 Cookies are HttpOnly, SameSite=Lax, and Secure with the `__Host-` prefix on HTTPS.
 HTTP is allowed only on localhost/loopback.
 Only cookie hashes are stored in SQLite.
-Raw cookies, provider tokens, client secrets, and authorization headers are never persisted or logged by AppKit.
+Raw cookies, key secrets, provider tokens, client secrets, and authorization headers are never persisted or logged by AppKit.
 
 Use a dedicated local database file.
 AppKit owns its schema, opens it with restrictive permissions, and holds an exclusive SQLite lock until `Close`.
@@ -149,6 +149,26 @@ Logouts in Rauthy reach the app through back-channel logout.
 Bearer access tokens remain valid until expiry after logout: a bearer client is cut off within one access-token lifetime, not instantly.
 Bearer middleware also bounds request/WebSocket lifetime by token expiry.
 Token groups remain the token's snapshot.
+
+## Personal keys
+
+A key is a personal API key a signed-in person makes for a tool, scoped to some of their own permissions, so the tool calls the app's routes as that person with `Authorization: Bearer ak_...`.
+The policy's delegable permissions, the last argument of `authz.New`, say which permissions a key may ever carry; an app that lists none issues no keys, and the list never holds a permission that moves money, changes credentials or endpoints, or is irreversible.
+A key gets the permissions its scopes name, as long as they are delegable and the policy still grants them to the holder's groups, captured at creation and refreshed at each sign-in; a key that would get none is refused.
+A route behind a permission that is not delegable answers 403 to every key, so apps need no second check; when one permission would cover a route a key may call and one it may not, split the permission.
+`Identity.KeyID` names the key on a request it made and is empty otherwise, so a write rule may refuse one case to keys.
+A key lives at most `SessionConfig.KeyLifetime` from creation, thirty days by default and never more than ninety, so a leaked key dies on its own within a quarter.
+AppKit owns `/auth/keys`: a person lists, makes, and revokes their own keys from a browser session, and a key cannot manage keys.
+`GET /auth/keys` answers `{"keys": [{id, name, scopes, permissions, created_at, expires_at, last_used_at, revoked_at}]}`, newest first, where `permissions` is what the key gets now; `POST /auth/keys` takes `{name, scopes, lifetime_seconds}` and answers 201 with `{key, secret}`, the only time the secret is shown; `DELETE /auth/keys/{id}` answers 204 whether or not the key was live.
+`/auth/session` for a key answers `user` with `key_id`, the key's `permissions`, and `key: {name, scopes, expires_at}`, and `OnSessionRequest` does not run; for a browser it adds `keys: {delegable, max_lifetime_seconds}` when the person may give a key something.
+With `SessionConfig.KeyAdminPermission` set, `GET /auth/users/{subject}/keys` lists any person's keys, and `DELETE` on that path or on `/{id}` under it revokes all or one, behind that permission, so an admin page can end a disabled person's keys.
+Every app keeps the starter's Account page at `/account`, where a person manages their keys.
+Revocation and expiry cancel live requests and sockets like a session's end; a tool that sees close code `4401` or `signed-out` reads `/auth/session` again and reconnects, since the key may have been narrowed rather than ended.
+Removing a person from the app's groups, or disabling them in Rauthy, does not end their keys: they are narrowed at the next sign-in, which a disabled account never makes, and die at expiry, so revoke them from the Account page or the admin route.
+Rauthy logouts end sessions, never keys.
+Only key hashes are stored; the secret is shown once at creation.
+The session database still needs no backup, but a restore would resurrect revoked keys, and losing it loses every key.
+Tools keep a key in a secrets store, send it only to the app's origin and only in the header, and an agent that reads untrusted content gets a read-only key.
 
 ## Rauthy
 
@@ -202,7 +222,7 @@ An app is one process listening on loopback behind a TLS reverse proxy, with `AP
 - **Logs:** never log query strings for `/auth/callback`, because they contain one-time authorization codes.
 - **Secrets:** `RAUTHY_CLIENT_SECRET` and `APP_MASTER_KEY` are read from the environment and belong in a protected environment file, never in the repository.
 - **Master key:** give each application its own, and store a copy in a password manager before the app first encrypts anything; losing it loses every stored credential.
-- **Backups:** back up the application's own database, never together with its master key; the session database needs none, since losing it only signs everyone out.
+- **Backups:** back up the application's own database, never together with its master key; the session database needs none, since losing it only signs everyone out and loses every personal key, and a restore would resurrect revoked keys.
 
 ## Install
 
@@ -245,6 +265,7 @@ policy, err := authz.New(
     },
     map[string][]string{"deployment-builders": {"builder"}},
     map[string][]string{"monitor": {"auditor"}}, // Rauthy clients of applications that call this one; nil when none
+    []string{"bots.all.read"},                   // permissions a person may give a personal key; nil when the app issues none
 )
 // Handle err at startup; pass policy to identity.SessionConfig, which resolves it onto every identity.
 if viewer.Can("bots.write") { /* viewer is the identity.Identity from the request */ }
@@ -252,6 +273,7 @@ if viewer.Can("bots.write") { /* viewer is the identity.Identity from the reques
 
 Multiple groups/roles union permissions; unknown groups and unlisted clients grant nothing; roles and permissions are returned in sorted order.
 `policy.Resolve(groups, localRoles...)` returns an `authz.Actor` directly, and also accepts trusted application-owned role assignments, never unvalidated request values.
+`policy.ResolveKey(groups, scopes)` returns what a personal key gets: its scopes, kept only where delegable and granted to the holder's groups; `policy.Delegable()` lists the delegable permissions.
 Permissions say what a role may do; the application's own resource rules decide which records that applies to.
 Rauthy groups are shared by every application, so start each group name with the application name (`notes-admins`, `billing-admins`).
 

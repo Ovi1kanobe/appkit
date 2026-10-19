@@ -90,7 +90,7 @@ func newSessionFixture(t *testing.T, lifetime time.Duration, secret string) *ses
 			http.NotFound(w, r)
 		}
 	}))
-	policy, _ := authz.New(map[string][]string{"observer": {"diagnostics.read"}}, map[string][]string{"observers": {"observer"}}, nil)
+	policy, _ := authz.New(map[string][]string{"observer": {"diagnostics.read"}}, map[string][]string{"observers": {"observer"}}, nil, nil)
 	f.app = httptest.NewServer(http.NewServeMux())
 	f.config = identity.SessionConfig{Issuer: f.provider.URL, ClientID: "appkit", ClientSecret: secret, Origin: f.app.URL, DatabasePath: filepath.Join(t.TempDir(), "sessions.sqlite"), Policy: policy, Lifetime: lifetime}
 	f.open()
@@ -301,7 +301,7 @@ func TestSessionSecondProcess(t *testing.T) {
 	if os.Getenv("APPKIT_LOCK_TEST") != "1" {
 		return
 	}
-	policy, _ := authz.New(nil, nil, nil)
+	policy, _ := authz.New(nil, nil, nil, nil)
 	s, err := identity.NewSessions(context.Background(), identity.SessionConfig{Issuer: os.Getenv("APPKIT_LOCK_ISSUER"), ClientID: "appkit", Origin: os.Getenv("APPKIT_LOCK_ORIGIN"), DatabasePath: os.Getenv("APPKIT_LOCK_DB"), Policy: policy})
 	if s != nil {
 		s.Close()
