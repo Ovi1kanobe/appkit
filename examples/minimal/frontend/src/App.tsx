@@ -2,6 +2,7 @@ import { BrowserRouter, Route, Routes } from "react-router"
 
 import { Layout } from "@/components/Layout"
 import { Toaster } from "@/components/ui/sonner"
+import { Account } from "@/pages/Account"
 import { Dashboard } from "@/pages/Dashboard"
 import { Home } from "@/pages/Home"
 import { NotFound } from "@/pages/NotFound"
@@ -15,6 +16,7 @@ export default function App() {
           <Route path="/" element={<Home />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/account" element={<Account />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Layout>

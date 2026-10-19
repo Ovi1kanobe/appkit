@@ -71,7 +71,8 @@ const (
 const monitorClient = "monitor"
 
 // newPolicy defines the application's roles and permissions: what each group
-// grants a person, and what each client grants a calling application.
+// grants a person, what each client grants a calling application, and which
+// permissions a person may give a key they make for a tool.
 func newPolicy() (*authz.Policy, error) {
 	return authz.New(
 		map[string][]string{
@@ -81,6 +82,7 @@ func newPolicy() (*authz.Policy, error) {
 		},
 		map[string][]string{memberGroup: {"member"}, adminGroup: {"admin"}},
 		map[string][]string{monitorClient: {"monitor"}},
+		[]string{access.NotesRead},
 	)
 }
 
@@ -190,6 +192,7 @@ func routes(sessions *identity.Sessions, profiles *userprofiles.System, diagnost
 	mux.Handle(wsapi.EmailPattern, sessions.Require(identity.RequirePermission(access.EmailWrite, wsapi.Email(hub))))
 	mux.Handle(httpapi.DashboardPattern, sessions.Require(pages))
 	mux.Handle(httpapi.SettingsPattern, sessions.Require(pages))
+	mux.Handle(httpapi.AccountPattern, sessions.Require(pages))
 	mux.Handle(httpapi.FrontendPattern, pages)
 	return api.LimitBodies(api.DefaultBodyLimit, mux)
 }

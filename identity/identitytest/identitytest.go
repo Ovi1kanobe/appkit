@@ -3,11 +3,13 @@
 package identitytest
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -207,4 +209,60 @@ func (provider *Provider) SignIn(t testing.TB, appURL string, user User) *http.C
 	}
 	t.Fatalf("identitytest: sign-in failed (callback status %d)", response.StatusCode)
 	return nil
+}
+
+// CreateKey makes a key for the signed-in person through /auth/keys, as the
+// Account page does, and returns its id, for revoking it, and its secret. It
+// asks for the application's maximum lifetime, read from /auth/session, and
+// fails the test when the application lists nothing delegable or refuses the
+// key.
+func (provider *Provider) CreateKey(t testing.TB, appURL string, cookie *http.Cookie, name string, scopes ...string) (id, secret string) {
+	t.Helper()
+	base := strings.TrimSuffix(appURL, "/")
+	request, err := http.NewRequest(http.MethodGet, base+"/auth/session", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.AddCookie(cookie)
+	var session struct {
+		Keys *struct {
+			MaxLifetimeSeconds int64 `json:"max_lifetime_seconds"`
+		} `json:"keys"`
+	}
+	provider.call(t, request, http.StatusOK, &session)
+	if session.Keys == nil {
+		t.Fatal("identitytest: the application lists nothing delegable, so this person can make no key")
+	}
+	body, _ := json.Marshal(map[string]any{"name": name, "scopes": scopes, "lifetime_seconds": session.Keys.MaxLifetimeSeconds})
+	request, err = http.NewRequest(http.MethodPost, base+"/auth/keys", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.AddCookie(cookie)
+	request.Header.Set("Origin", base)
+	request.Header.Set("Content-Type", "application/json")
+	var made struct {
+		Key struct {
+			ID string `json:"id"`
+		} `json:"key"`
+		Secret string `json:"secret"`
+	}
+	provider.call(t, request, http.StatusCreated, &made)
+	return made.Key.ID, made.Secret
+}
+
+func (provider *Provider) call(t testing.TB, request *http.Request, want int, answer any) {
+	t.Helper()
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	data, _ := io.ReadAll(response.Body)
+	if response.StatusCode != want {
+		t.Fatalf("identitytest: %s %s answered %d: %s", request.Method, request.URL.Path, response.StatusCode, data)
+	}
+	if err := json.Unmarshal(data, answer); err != nil {
+		t.Fatalf("identitytest: %s %s answered no JSON: %s", request.Method, request.URL.Path, data)
+	}
 }

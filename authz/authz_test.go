@@ -10,7 +10,8 @@ func TestPolicy(t *testing.T) {
 	roles := map[string][]string{"reader": {"bots.read"}, "operator": {"bots.read", "bots.start"}}
 	groups := map[string][]string{"viewers": {"reader"}, "operators": {"operator"}}
 	clients := map[string][]string{"monitor": {"reader"}}
-	policy, err := New(roles, groups, clients)
+	delegable := []string{"bots.read"}
+	policy, err := New(roles, groups, clients, delegable)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,18 +57,49 @@ func TestPolicy(t *testing.T) {
 	if policy.ResolveClient("stranger").Can("bots.read") || policy.ResolveClient("viewers").Can("bots.read") {
 		t.Fatal("unlisted client allowed")
 	}
+	delegable[0] = "changed"
+	if !reflect.DeepEqual(policy.Delegable(), []string{"bots.read"}) {
+		t.Fatalf("delegable %v", policy.Delegable())
+	}
+	for _, test := range []struct {
+		name           string
+		groups, scopes []string
+		permissions    []string
+	}{
+		{"held and delegable", []string{"operators"}, []string{"bots.read", "bots.start"}, []string{"bots.read"}},
+		{"not held", []string{"viewers"}, []string{"bots.start"}, []string{}},
+		{"unmapped holder", []string{"unknown"}, []string{"bots.read"}, []string{}},
+		{"no scopes", []string{"operators"}, nil, []string{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			actor := policy.ResolveKey(test.groups, test.scopes)
+			if !reflect.DeepEqual(actor.Permissions(), test.permissions) {
+				t.Fatalf("key permissions %v", actor.Permissions())
+			}
+		})
+	}
+	if roles := policy.ResolveKey([]string{"operators"}, []string{"bots.read"}).Roles(); strings.Join(roles, ",") != "operator" {
+		t.Fatalf("key roles %v", roles)
+	}
 }
 
 func TestInvalidPolicy(t *testing.T) {
-	for _, test := range []struct{ roles, groups, clients map[string][]string }{
-		{map[string][]string{"": {}}, nil, nil},
-		{map[string][]string{"role": {""}}, nil, nil},
-		{nil, map[string][]string{"group": {"unknown"}}, nil},
-		{nil, map[string][]string{"": {}}, nil},
-		{nil, nil, map[string][]string{"client": {"unknown"}}},
-		{nil, nil, map[string][]string{"": {}}},
+	reader := map[string][]string{"reader": {"bots.read"}}
+	for _, test := range []struct {
+		roles, groups, clients map[string][]string
+		delegable              []string
+	}{
+		{map[string][]string{"": {}}, nil, nil, nil},
+		{map[string][]string{"role": {""}}, nil, nil, nil},
+		{nil, map[string][]string{"group": {"unknown"}}, nil, nil},
+		{nil, map[string][]string{"": {}}, nil, nil},
+		{nil, nil, map[string][]string{"client": {"unknown"}}, nil},
+		{nil, nil, map[string][]string{"": {}}, nil},
+		{reader, nil, nil, []string{"bots.write"}},
+		{reader, nil, nil, []string{""}},
+		{reader, nil, nil, []string{"bots.read", "bots.read"}},
 	} {
-		if _, err := New(test.roles, test.groups, test.clients); err == nil {
+		if _, err := New(test.roles, test.groups, test.clients, test.delegable); err == nil {
 			t.Fatal("invalid policy accepted")
 		}
 	}

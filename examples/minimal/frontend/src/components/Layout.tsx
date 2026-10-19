@@ -1,6 +1,6 @@
 import { cn } from "cn"
 import type { LucideIcon } from "lucide-react"
-import { Gauge, LogOut, Settings, StickyNote } from "lucide-react"
+import { Gauge, LogOut, Settings, StickyNote, UserRound } from "lucide-react"
 import type { ComponentProps, ReactNode } from "react"
 import { NavLink, useLocation } from "react-router"
 import { ThemeToggle } from "@/components/ThemeToggle"
@@ -114,21 +114,29 @@ export function Layout({ children }: { children: ReactNode }) {
             </SidebarGroup>
           </SidebarContent>
           <SidebarFooter>
+            {/* Two items, the account link and an icon-only sign-out, so both fit the collapsed icon rail. */}
             <SidebarMenu>
               <SidebarMenuItem>
                 {session.status === "signed-in" ? (
-                  <form method="post" action="/auth/logout">
-                    <SidebarMenuButton
-                      type="submit"
-                      tooltip="Sign out"
-                      aria-label={`Sign out ${session.user.email ?? session.user.subject}`}
-                    >
-                      <LogOut />
+                  <SidebarMenuButton asChild tooltip="Account" isActive={location.pathname.startsWith("/account")}>
+                    <SidebarLink to="/account">
+                      <UserRound />
                       <span className="truncate">{session.user.email ?? session.user.subject}</span>
+                    </SidebarLink>
+                  </SidebarMenuButton>
+                ) : (
+                  <SidebarMenuSkeleton showIcon />
+                )}
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                {session.status === "signed-in" ? (
+                  <form method="post" action="/auth/logout">
+                    <SidebarMenuButton type="submit" tooltip="Sign out" aria-label="Sign out" className="w-8">
+                      <LogOut />
                     </SidebarMenuButton>
                   </form>
                 ) : (
-                  <SidebarMenuSkeleton showIcon />
+                  <Skeleton className="size-8 rounded-md" />
                 )}
               </SidebarMenuItem>
             </SidebarMenu>

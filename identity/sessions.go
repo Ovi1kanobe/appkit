@@ -30,6 +30,14 @@ type SessionConfig struct {
 	DatabasePath                   string
 	Policy                         *authz.Policy
 	Lifetime                       time.Duration // Zero means eight hours; fixed from sign-in, never sliding.
+	// KeyLifetime caps how long a personal key may live. Zero means thirty
+	// days; more than ninety is refused, so a leaked key dies on its own
+	// within a quarter.
+	KeyLifetime time.Duration
+	// KeyAdminPermission, when set, serves /auth/users/{subject}/keys behind
+	// it, so a page may list and revoke another person's keys. Unset, the
+	// routes are not served.
+	KeyAdminPermission string
 	// OnSessionRequest, when set, runs on each signed-in /auth/session request, which
 	// every page makes as it loads, so the app can record that the person is here.
 	// What it returns is sent as "app", so pages load per-person state in the same
@@ -37,9 +45,10 @@ type SessionConfig struct {
 	OnSessionRequest func(r *http.Request, actor Identity) (any, error)
 }
 
-// Sessions owns browser authentication and its SQLite connection. Call Close on
-// shutdown. Use Verifier separately for bearer routes; the two never fall back to
-// each other's credentials.
+// Sessions owns browser authentication, personal keys, and its SQLite
+// connection. Call Close on shutdown. Use Verifier separately for bearer
+// routes: Require and Optional accept a session cookie or a key, Bearer a
+// Rauthy access token, and each refuses the other credentials.
 type Sessions struct {
 	config     SessionConfig
 	verifier   *Verifier
@@ -51,6 +60,7 @@ type Sessions struct {
 	closed     bool
 	flows      map[string]loginFlow
 	watches    map[string]map[*sessionWatch]struct{}
+	keyStamps  map[string]keyStamp
 }
 
 type loginFlow struct {
@@ -88,6 +98,12 @@ func NewSessions(ctx context.Context, config SessionConfig) (*Sessions, error) {
 	if config.Lifetime < time.Second {
 		return nil, errors.New("identity: session lifetime must be at least one second")
 	}
+	if config.KeyLifetime == 0 {
+		config.KeyLifetime = defaultKeyLife
+	}
+	if config.KeyLifetime < time.Second || config.KeyLifetime > longestKeyLife {
+		return nil, errors.New("identity: key lifetime must be between one second and ninety days")
+	}
 	if config.DatabasePath == "" || strings.ContainsAny(config.DatabasePath, "?\x00") || strings.HasPrefix(config.DatabasePath, "file:") || config.DatabasePath == ":memory:" {
 		return nil, errors.New("identity: a dedicated session database file is required")
 	}
@@ -120,7 +136,7 @@ func NewSessions(ctx context.Context, config SessionConfig) (*Sessions, error) {
 			return nil, errors.New("identity: invalid provider endpoint")
 		}
 	}
-	s := &Sessions{config: config, verifier: v, origin: u, cookieName: "__Host-appkit", flows: make(map[string]loginFlow), watches: make(map[string]map[*sessionWatch]struct{})}
+	s := &Sessions{config: config, verifier: v, origin: u, cookieName: "__Host-appkit", flows: make(map[string]loginFlow), watches: make(map[string]map[*sessionWatch]struct{}), keyStamps: make(map[string]keyStamp)}
 	if u.Scheme == "http" {
 		s.cookieName = "appkit_local"
 	}
@@ -138,6 +154,7 @@ func NewSessions(ctx context.Context, config SessionConfig) (*Sessions, error) {
 		`CREATE TABLE IF NOT EXISTS appkit_sessions (hash TEXT PRIMARY KEY, subject TEXT NOT NULL, sid TEXT NOT NULL, identity TEXT NOT NULL, expires INTEGER NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS appkit_logouts (hash TEXT PRIMARY KEY, subject TEXT NOT NULL, sid TEXT NOT NULL, issued INTEGER NOT NULL, received INTEGER NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS appkit_provider (id INTEGER PRIMARY KEY CHECK(id=1), issuer TEXT NOT NULL, client TEXT NOT NULL, origin TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS appkit_keys (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, subject TEXT NOT NULL, identity TEXT NOT NULL, name TEXT NOT NULL, scopes TEXT NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL, used INTEGER, revoked INTEGER)`,
 		"COMMIT",
 	} {
 		if _, err = s.conn.ExecContext(ctx, statement); err != nil {
@@ -161,9 +178,10 @@ func NewSessions(ctx context.Context, config SessionConfig) (*Sessions, error) {
 	return s, nil
 }
 
-// sessionSchemaVersion is the session database schema this AppKit writes.
-// A schema change raises it and adds a forward step in migrate.
-const sessionSchemaVersion = 1
+// sessionSchemaVersion is the session database schema this AppKit writes. A
+// schema change raises it: a new table is added to the startup list above, and
+// a change to an existing table is a step in migrate. Version 2 added keys.
+const sessionSchemaVersion = 2
 
 // migrate records the schema version, and refuses a database written by a newer
 // AppKit instead of misreading it.
@@ -232,6 +250,25 @@ func (s *Sessions) readSession(ctx context.Context, raw string) (sessionRecord, 
 	}
 	record.expires = time.UnixMilli(expires)
 	return record, nil
+}
+
+// watch cancels ctx when the credential whose hash is given ends, and returns
+// what releases the watch once the request is served. Called with s.mu held.
+func (s *Sessions) watch(hash string, cancel context.CancelFunc) (release func()) {
+	watch := &sessionWatch{cancel: cancel}
+	if s.watches[hash] == nil {
+		s.watches[hash] = make(map[*sessionWatch]struct{})
+	}
+	s.watches[hash][watch] = struct{}{}
+	return func() {
+		cancel()
+		s.mu.Lock()
+		delete(s.watches[hash], watch)
+		if len(s.watches[hash]) == 0 {
+			delete(s.watches, hash)
+		}
+		s.mu.Unlock()
+	}
 }
 
 func (s *Sessions) cancelSession(hash string) {

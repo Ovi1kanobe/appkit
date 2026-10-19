@@ -1,5 +1,6 @@
-// Package authz maps external groups, and the Rauthy clients of calling
-// applications, to application-defined roles and permissions.
+// Package authz maps external groups, the Rauthy clients of calling
+// applications, and the personal keys people make, to application-defined
+// roles and permissions.
 package authz
 
 import (
@@ -9,16 +10,19 @@ import (
 
 // Policy is immutable after construction and safe for concurrent use.
 type Policy struct {
-	roles   map[string][]string
-	groups  map[string][]string
-	clients map[string][]string
+	roles     map[string][]string
+	groups    map[string][]string
+	clients   map[string][]string
+	delegable map[string]struct{}
 }
 
 // New validates and copies the application's role definitions, the external
-// groups that grant them to people, and the Rauthy client IDs that grant them
-// to calling applications. An application nobody calls passes nil clients.
-func New(roles, groups, clients map[string][]string) (*Policy, error) {
-	policy := &Policy{roles: make(map[string][]string), groups: make(map[string][]string), clients: make(map[string][]string)}
+// groups that grant them to people, the Rauthy client IDs that grant them to
+// calling applications, and the permissions a person may give a key. An
+// application nobody calls passes nil clients; one that issues no keys passes
+// nil delegable. A delegable permission must be one some role grants.
+func New(roles, groups, clients map[string][]string, delegable []string) (*Policy, error) {
+	policy := &Policy{roles: make(map[string][]string), groups: make(map[string][]string), clients: make(map[string][]string), delegable: make(map[string]struct{})}
 	for role, permissions := range roles {
 		if role == "" {
 			return nil, fmt.Errorf("authz: empty role")
@@ -52,7 +56,32 @@ func New(roles, groups, clients map[string][]string) (*Policy, error) {
 		}
 		policy.clients[client] = append([]string(nil), mapped...)
 	}
+	granted := make(map[string]struct{})
+	for _, permissions := range policy.roles {
+		for _, permission := range permissions {
+			granted[permission] = struct{}{}
+		}
+	}
+	for _, permission := range delegable {
+		if _, exists := granted[permission]; !exists {
+			return nil, fmt.Errorf("authz: delegable permission %q is granted by no role", permission)
+		}
+		if _, exists := policy.delegable[permission]; exists {
+			return nil, fmt.Errorf("authz: duplicate delegable permission %q", permission)
+		}
+		policy.delegable[permission] = struct{}{}
+	}
 	return policy, nil
+}
+
+// Delegable returns the permissions a key may carry, sorted.
+func (policy *Policy) Delegable() []string {
+	permissions := make([]string, 0, len(policy.delegable))
+	for permission := range policy.delegable {
+		permissions = append(permissions, permission)
+	}
+	sort.Strings(permissions)
+	return permissions
 }
 
 // Actor is a permission snapshot. Its zero value grants nothing.
@@ -86,6 +115,20 @@ func (policy *Policy) ResolveClient(clientID string) Actor {
 		roles[role] = struct{}{}
 	}
 	return policy.actor(roles)
+}
+
+// ResolveKey returns what a key may do: the scopes it was given that are
+// delegable and that the policy grants to its holder's groups. Roles are the
+// holder's, as Resolve gives them; a key with no permission left gets nothing.
+func (policy *Policy) ResolveKey(groups, scopes []string) Actor {
+	holder := policy.Resolve(groups)
+	actor := Actor{roles: holder.roles, permissions: make(map[string]struct{})}
+	for _, scope := range scopes {
+		if _, delegable := policy.delegable[scope]; delegable && holder.Can(scope) {
+			actor.permissions[scope] = struct{}{}
+		}
+	}
+	return actor
 }
 
 func (policy *Policy) actor(roles map[string]struct{}) Actor {

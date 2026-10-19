@@ -20,7 +20,7 @@ func TestIdentityTestHelper(t *testing.T) {
 	provider := identitytest.NewProvider(t)
 	app := httptest.NewServer(http.NewServeMux())
 	defer app.Close()
-	policy, _ := authz.New(map[string][]string{"observer": {"diagnostics.read"}}, map[string][]string{"observers": {"observer"}}, map[string][]string{"monitor": {"observer"}})
+	policy, _ := authz.New(map[string][]string{"observer": {"diagnostics.read"}}, map[string][]string{"observers": {"observer"}}, map[string][]string{"monitor": {"observer"}}, nil)
 	sessions, err := identity.NewSessions(context.Background(), identity.SessionConfig{
 		Issuer: provider.Issuer, ClientID: provider.ClientID, Origin: app.URL,
 		DatabasePath: filepath.Join(t.TempDir(), "sessions.sqlite"), Policy: policy,
@@ -88,7 +88,7 @@ func TestServiceClient(t *testing.T) {
 	provider := identitytest.NewProvider(t)
 	accounts := httptest.NewServer(http.NewServeMux())
 	defer accounts.Close()
-	policy, _ := authz.New(map[string][]string{"reader": {"profiles.read"}}, nil, map[string][]string{"notes": {"reader"}})
+	policy, _ := authz.New(map[string][]string{"reader": {"profiles.read"}}, nil, map[string][]string{"notes": {"reader"}}, nil)
 	accountsSessions, err := identity.NewSessions(context.Background(), identity.SessionConfig{
 		Issuer: provider.Issuer, ClientID: provider.ClientID, Origin: accounts.URL,
 		DatabasePath: filepath.Join(t.TempDir(), "accounts-sessions.sqlite"), Policy: policy,
@@ -104,7 +104,7 @@ func TestServiceClient(t *testing.T) {
 	}))))
 	accounts.Config.Handler = mux
 
-	notesPolicy, _ := authz.New(nil, nil, nil)
+	notesPolicy, _ := authz.New(nil, nil, nil, nil)
 	notesSessions, err := identity.NewSessions(context.Background(), identity.SessionConfig{
 		Issuer: provider.Issuer, ClientID: "notes", ClientSecret: "notes-secret", Origin: "http://localhost:8081",
 		DatabasePath: filepath.Join(t.TempDir(), "notes-sessions.sqlite"), Policy: notesPolicy,
@@ -129,7 +129,7 @@ func TestServiceClient(t *testing.T) {
 	if response.StatusCode != 200 || string(body) != "notes" {
 		t.Fatalf("service call: %d %q", response.StatusCode, body)
 	}
-	public, _ := authz.New(nil, nil, nil)
+	public, _ := authz.New(nil, nil, nil, nil)
 	publicSessions, err := identity.NewSessions(context.Background(), identity.SessionConfig{
 		Issuer: provider.Issuer, ClientID: "public", Origin: "http://localhost:8082",
 		DatabasePath: filepath.Join(t.TempDir(), "public-sessions.sqlite"), Policy: public,
@@ -166,7 +166,7 @@ func TestRequirePermission(t *testing.T) {
 func TestSessionSchemaVersion(t *testing.T) {
 	provider := identitytest.NewProvider(t)
 	path := filepath.Join(t.TempDir(), "sessions.sqlite")
-	policy, _ := authz.New(nil, nil, nil)
+	policy, _ := authz.New(nil, nil, nil, nil)
 	config := identity.SessionConfig{Issuer: provider.Issuer, ClientID: provider.ClientID, Origin: "http://localhost:8080", DatabasePath: path, Policy: policy}
 	sessions, err := identity.NewSessions(context.Background(), config)
 	if err != nil {

@@ -19,7 +19,7 @@ AppKit supplies independent infrastructure packages, not an application runtime.
 - Packages never import application code.
 - An AppKit package imports another only with approval.
 - `config` is a level above: it may import the packages it configures, and they never import it.
-- Approved exceptions: `identity` → `authz`, `realtime` → `identity`.
+- Approved exceptions: `identity` → `authz`, `identity` → `api`, `realtime` → `identity`.
 - Propose an exception when it makes things simpler or easier to understand.
 
 ## Behavior to preserve
@@ -29,6 +29,7 @@ AppKit supplies independent infrastructure packages, not an application runtime.
 - `identity.RequirePermission` checks coarse permissions only; resource-level rules belong to applications.
 - Session-specific back-channel notices end that session; subject-only notices end all of the subject's sessions; durable logout records reject racing callbacks.
 - Expiry and revocation cancel request contexts; `realtime` closes those connections and `/auth/events` notifies pages.
+- A personal key gets only its scopes, only where delegable, only while the holder's groups grant them; a key manages no keys, and Rauthy logouts never end keys.
 - The session database is exclusively locked for its lifetime; its schema is versioned, migrates forward, and an older AppKit refuses a newer one.
 - `realtime.Hub` is a local connection registry with no hidden workers, queues, durability, or cross-process delivery.
 - `frontend` never applies the SPA fallback to backend namespaces; missing assets return 404.

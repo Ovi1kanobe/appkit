@@ -18,7 +18,8 @@ import (
 )
 
 // Routes mounts the complete /auth/ namespace, including login, callback,
-// logout, back-channel logout, session JSON, and session-end events.
+// logout, back-channel logout, session JSON, session-end events, and key
+// management.
 func (s *Sessions) Routes(mux *http.ServeMux) {
 	auth := http.NewServeMux()
 	auth.HandleFunc("GET /auth/login", s.login)
@@ -27,13 +28,15 @@ func (s *Sessions) Routes(mux *http.ServeMux) {
 	auth.Handle("POST /auth/backchannel", s.verifier.logoutHandler(s.applyLogout))
 	auth.Handle("GET /auth/session", s.Optional(http.HandlerFunc(s.sessionJSON)))
 	auth.Handle("GET /auth/events", s.Optional(http.HandlerFunc(s.events)))
+	s.keyRoutes(auth)
 	mux.Handle("/auth/", s.boundary(auth))
 }
 
 // Bearer authenticates a separate non-browser route with an access token and
 // attaches the identity with its permissions: a person's from their groups, a
 // calling application's from the policy's client list. It ignores browser
-// cookies; logout does not revoke an already issued access token.
+// cookies and refuses a personal key; logout does not revoke an already
+// issued access token.
 func (s *Sessions) Bearer(next http.Handler) http.Handler {
 	return s.verifier.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		caller, _ := FromContext(r.Context())
@@ -90,10 +93,17 @@ func (s *Sessions) csrfOK(r *http.Request) bool {
 }
 
 // Optional attaches a browser identity if a live session exists, and protects
-// mutations and WebSocket upgrades against cross-origin use. The request context
-// ends when its session expires or is revoked. Handlers must respect that context.
+// mutations and WebSocket upgrades against cross-origin use. A request with a
+// Bearer header presents a personal key instead and is never anonymous: it is
+// served as the key's holder or refused with 401, and never falls back to the
+// cookie. The request context ends when its session or key expires or is
+// revoked. Handlers must respect that context.
 func (s *Sessions) Optional(next http.Handler) http.Handler {
 	return s.boundary(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isKeyRequest(r) {
+			s.admitKey(w, r, next)
+			return
+		}
 		if !s.csrfOK(r) {
 			writeError(w, http.StatusForbidden, "Same-origin request required.")
 			return
@@ -118,21 +128,9 @@ func (s *Sessions) Optional(next http.Handler) http.Handler {
 		person := record.Identity
 		person.Permissions = s.config.Policy.Resolve(person.Groups).Permissions()
 		ctx, cancel := context.WithDeadline(WithContext(r.Context(), person), record.expires)
-		watch := &sessionWatch{cancel: cancel}
-		if s.watches[record.hash] == nil {
-			s.watches[record.hash] = make(map[*sessionWatch]struct{})
-		}
-		s.watches[record.hash][watch] = struct{}{}
+		release := s.watch(record.hash, cancel)
 		s.mu.Unlock()
-		defer func() {
-			cancel()
-			s.mu.Lock()
-			delete(s.watches[record.hash], watch)
-			if len(s.watches[record.hash]) == 0 {
-				delete(s.watches, record.hash)
-			}
-			s.mu.Unlock()
-		}()
+		defer release()
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}))
 }
@@ -251,11 +249,6 @@ func (s *Sessions) callback(w http.ResponseWriter, r *http.Request) {
 		s.loginError(w, "access token binding failed")
 		return
 	}
-	// A person with none of this application's groups gets no session.
-	if len(s.config.Policy.Resolve(claims.Groups).Roles()) == 0 {
-		http.Error(w, "You don't have access to this application. Ask its administrator to add you to one of its groups, then sign in again.", http.StatusForbidden)
-		return
-	}
 	raw := randomSecret()
 	record := sessionRecord{Identity: Identity{Subject: id.Subject, Email: claims.Email, Groups: claims.Groups}, hash: cookieHash(raw), sid: claims.SID, expires: time.Now().Add(s.config.Lifetime)}
 	data, _ := json.Marshal(record.Identity)
@@ -263,6 +256,17 @@ func (s *Sessions) callback(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 	if s.closed {
 		http.Error(w, "sessions unavailable", 503)
+		return
+	}
+	// The person's keys learn their groups as of this sign-in, whether or not
+	// a session follows: a person refused below keeps keys that now get nothing.
+	if err = s.refreshKeys(ctx, record.Identity); err != nil {
+		http.Error(w, "sessions unavailable", 503)
+		return
+	}
+	// A person with none of this application's groups gets no session.
+	if len(s.config.Policy.Resolve(claims.Groups).Roles()) == 0 {
+		http.Error(w, "You don't have access to this application. Ask its administrator to add you to one of its groups, then sign in again.", http.StatusForbidden)
 		return
 	}
 	// Callback flows expire after five minutes and provider calls after ten
@@ -329,11 +333,23 @@ func (s *Sessions) logout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+// sessionJSON answers who is signed in and what they may do. A browser also
+// learns what it may give a key, when the app issues keys and the person holds
+// something delegable; a key learns about itself, and OnSessionRequest does
+// not run for it.
 func (s *Sessions) sessionJSON(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	actor, ok := FromContext(r.Context())
 	if !ok {
 		_, _ = io.WriteString(w, `{"user":null,"permissions":[]}`)
+		return
+	}
+	if record, isKey := keyFromContext(r.Context()); isKey {
+		_ = json.NewEncoder(w).Encode(struct {
+			User        Identity `json:"user"`
+			Permissions []string `json:"permissions"`
+			Key         any      `json:"key"`
+		}{actor, actor.Permissions, map[string]any{"name": record.name, "scopes": record.scopes, "expires_at": record.expires.UTC()}})
 		return
 	}
 	var app any
@@ -345,11 +361,16 @@ func (s *Sessions) sessionJSON(w http.ResponseWriter, r *http.Request) {
 		}
 		app = info
 	}
+	var keys any
+	if delegable := s.delegableFor(actor); len(delegable) != 0 {
+		keys = map[string]any{"delegable": delegable, "max_lifetime_seconds": int64(s.config.KeyLifetime / time.Second)}
+	}
 	_ = json.NewEncoder(w).Encode(struct {
 		User        Identity `json:"user"`
 		Permissions []string `json:"permissions"`
 		App         any      `json:"app,omitempty"`
-	}{actor, actor.Permissions, app})
+		Keys        any      `json:"keys,omitempty"`
+	}{actor, actor.Permissions, app, keys})
 }
 
 func (s *Sessions) events(w http.ResponseWriter, r *http.Request) {

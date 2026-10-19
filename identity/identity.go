@@ -13,13 +13,16 @@ import (
 // the permissions the application's policy grants, resolved once when the
 // identity is attached. For a person, Subject is the provider's canonical OIDC
 // sub, never an email address. For a calling application, Client is true and
-// Subject is its Rauthy client ID.
+// Subject is its Rauthy client ID. For a person's key, KeyID names the key
+// and the permissions are the key's; it is empty for a session or a Rauthy
+// token.
 type Identity struct {
 	Subject     string   `json:"subject"`
 	Client      bool     `json:"client,omitempty"`
 	Email       string   `json:"email,omitempty"`
 	Groups      []string `json:"groups,omitempty"`
 	Roles       []string `json:"roles,omitempty"`
+	KeyID       string   `json:"key_id,omitempty"`
 	Permissions []string `json:"-"` // resolved per request, never stored or sent as part of the identity
 	expiresAt   time.Time
 }
