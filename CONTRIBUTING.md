@@ -13,6 +13,7 @@ AppKit supplies independent infrastructure packages, not an application runtime.
 - Add no architectural pattern or interface without a concrete requirement.
 - Keep `README.md` true: update it with every architectural change.
 - Keep the examples in `examples/` working; tell the maintainer when a change affects how apps are built.
+- `examples/minimal/REQUIREMENTS.md` describes the minimal example the way every app's requirements file does; keep it true when that example changes.
 
 ## Imports
 
