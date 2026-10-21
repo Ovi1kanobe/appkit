@@ -5,3 +5,4 @@ frontend/tsconfig.tsbuildinfo
 .env
 dist/
 *.sqlite*
+appkit/
