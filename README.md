@@ -308,7 +308,7 @@ Concurrent writes are safe; writes and pings have a five-second ceiling, and fai
 `PublishEach` asks a `View`, once per subscriber, what that person receives, so each person gets only their own view; it writes sequentially to a subscriber snapshot, and a write that misses its five-second ceiling closes that socket.
 `Publisher` turns a system's changes into messages on one topic: pass its `Add` as the system's `onChange`, which never blocks and keeps the latest change per key in first-arrival order, merged by `Merge` when set, and start `Run`, which sends each subscriber their view of every pending change.
 Its view function runs once per change and returns the `View`, so a lookup every subscriber needs runs once, and a slow subscriber is closed by its own write ceiling rather than costing the others the change.
-When the view returns an error, `Run` logs it and tries the change again a second later, unless a newer change for its key has replaced it; so an error means a failure that can pass, such as a busy database, and nothing to send, such as an item that no longer exists, is a nil `View` with no error.
+When the view returns an error, `Run` logs it and tries the change again a second later, unless a newer change for its key has replaced it; so an error means a failure that can pass, such as a busy database. An item that no longer exists is not an error: the view returns a `View` that sends its removal, and a nil `View` sends nothing at all.
 It provides no durability, replay, ordering across concurrent publishers, or cross-process delivery.
 Apps explicitly call `Hub.Close` during shutdown because HTTP shutdown does not close upgraded sockets.
 
