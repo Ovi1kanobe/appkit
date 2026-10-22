@@ -1,8 +1,9 @@
 name: check
 
-# Every push to main. Releases are tagged on main, so a tagged commit has
-# already passed here.
+# Every pull request and every push to main. Releases are tagged on main,
+# so a tagged commit has already passed here.
 on:
+  pull_request:
   push:
     branches:
       - main

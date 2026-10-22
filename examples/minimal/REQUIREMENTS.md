@@ -99,6 +99,9 @@ An admin enters the email provider's API key once on Settings and sees that it i
 ## Outside services
 - An email provider: its API key is entered on the Settings page; the example never calls it.
 
+## Other apps
+- Called by a monitoring app, client `monitor`, for the process status at `/api/status`.
+
 ## Decisions
 - Status is also served to bearer clients at `/api/status`, instead of a separate monitoring app, because the example must show a bearer route.
 
