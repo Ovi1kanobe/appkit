@@ -91,7 +91,7 @@ func newSessionFixture(t *testing.T, lifetime time.Duration, secret string) *ses
 		}
 	}))
 	policy, _ := authz.New(map[string][]string{"observer": {"diagnostics.read"}}, map[string][]string{"observers": {"observer"}}, nil, nil)
-	f.app = httptest.NewServer(http.NewServeMux())
+	f.app = httptest.NewServer(nil)
 	f.config = identity.SessionConfig{Issuer: f.provider.URL, ClientID: "appkit", ClientSecret: secret, Origin: f.app.URL, DatabasePath: filepath.Join(t.TempDir(), "sessions.sqlite"), Policy: policy, Lifetime: lifetime}
 	f.open()
 	t.Cleanup(func() { f.hub.Close(); f.sessions.Close(); f.app.Close(); f.provider.Close() })
@@ -104,16 +104,20 @@ func (f *sessionFixture) open() {
 		f.t.Fatal(err)
 	}
 	f.sessions = s
-	mux := http.NewServeMux()
-	s.Routes(mux)
+	router := s.Router()
 	who := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a, _ := identity.FromContext(r.Context())
 		deadline, _ := r.Context().Deadline()
 		json.NewEncoder(w).Encode(map[string]any{"subject": a.Subject, "deadline": deadline.UnixMilli(), "permissions": a.Permissions, "can": a.Can("diagnostics.read")})
 	})
-	mux.Handle("/protected", s.Require(who))
-	mux.Handle("/bearer", s.Bearer(who))
-	mux.Handle("/socket", s.Require(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	router.Private("GET /protected", "diagnostics.read", who)
+	router.Private("POST /protected", "diagnostics.read", who)
+	router.Service("GET /bearer", "diagnostics.read", who)
+	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	router.Private("GET /diagnostics", "diagnostics.read", ok)
+	router.Private("GET /notes", "notes.write", ok)
+	router.Private("POST /mutate", "diagnostics.read", ok)
+	router.Private("GET /socket", "diagnostics.read", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, err := f.hub.Accept(w, r)
 		if err != nil {
 			return
@@ -124,8 +128,8 @@ func (f *sessionFixture) open() {
 				return
 			}
 		}
-	})))
-	f.app.Config.Handler = mux // No requests run while replacing the stopped handler.
+	}))
+	f.app.Config.Handler = router // No requests run while replacing the stopped handler.
 }
 func (f *sessionFixture) request(method, path string, cookie *http.Cookie, headers map[string]string, body string) *http.Response {
 	f.t.Helper()
@@ -329,7 +333,10 @@ func TestSessionLoginValidation(t *testing.T) {
 	status(t, f.request("GET", "/auth/callback?state="+a.query.Get("state")+"&code=x", &wrong, nil, ""), 400)
 	status(t, f.finish(a), 303)
 	status(t, f.finish(a), 400)
-	status(t, f.request("GET", "/protected", nil, map[string]string{"Accept": "text/html"}, ""), 303)
+	// A signed-out page request gets the JSON 401, never a redirect to sign-in.
+	if body := status(t, f.request("GET", "/protected", nil, map[string]string{"Accept": "text/html"}, ""), 401); body != "{\"error\":\"Sign in required.\"}\n" {
+		t.Fatalf("signed-out page body %q", body)
+	}
 }
 func TestSessionCSRFAndCredentialBoundaries(t *testing.T) {
 	f := newSessionFixture(t, 0, "")
@@ -350,9 +357,9 @@ func TestSessionCSRFAndCredentialBoundaries(t *testing.T) {
 			t.Fatal("cross-site websocket accepted")
 		}
 	}
-	// Real bearer verification remains available separately.
+	// A service route verifies a Rauthy access token on its own.
 	now := time.Now().Unix()
-	claims := map[string]any{"iss": f.provider.URL, "aud": "appkit", "sub": "alice", "iat": now, "exp": now + 60}
+	claims := map[string]any{"iss": f.provider.URL, "aud": "appkit", "sub": "alice", "iat": now, "exp": now + 60, "groups": []string{"observers"}}
 	signer, _ := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: f.key}, (&jose.SignerOptions{}).WithType("at+jwt").WithHeader("kid", "fixture"))
 	payload, _ := json.Marshal(claims)
 	signed, _ := signer.Sign(payload)
@@ -473,10 +480,8 @@ func TestSessionPermissions(t *testing.T) {
 	if !who.Can || strings.Join(who.Permissions, ",") != "diagnostics.read" {
 		t.Fatalf("bearer permissions %v", who)
 	}
-	json.Unmarshal([]byte(status(t, f.request("GET", "/bearer", nil, map[string]string{"Authorization": "Bearer " + bearer([]string{"strangers"})}, ""), 200)), &who)
-	if who.Can || len(who.Permissions) != 0 {
-		t.Fatalf("unknown group permissions %v", who)
-	}
+	// An unknown group grants nothing, so the route's permission refuses it.
+	status(t, f.request("GET", "/bearer", nil, map[string]string{"Authorization": "Bearer " + bearer([]string{"strangers"})}, ""), 403)
 	f.sessions.Close()
 	stored, err := os.ReadFile(f.config.DatabasePath)
 	if err != nil {
