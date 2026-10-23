@@ -110,6 +110,7 @@ An admin enters the email provider's API key once on Settings and sees that it i
 ## Decisions
 - Status is also served to calling apps at `/api/status`, instead of a separate monitoring app, because the example must show a service route.
 - Notes are also served signed out at `/api/notes/public`, because the example must show a public data route.
+- The public notes route allows 60 requests a minute per address, enough for a wall display and too few to flood it.
 
 ## Out of scope
 - Sending email.

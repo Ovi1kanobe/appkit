@@ -181,7 +181,7 @@ func recordProfile(profiles *userprofiles.System) func(*http.Request, identity.I
 func routes(sessions *identity.Sessions, profiles *userprofiles.System, diagnosticSystem *diagnostics.System, noteSystem *notes.System, emailSystem *email.System, hub *realtime.Hub, pages http.Handler) http.Handler {
 	router := sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit})
 	router.Public(httpapi.HealthPattern, httpapi.Health(), identity.PublicOptions{Probe: true})
-	router.Public(httpapi.PublicNotesPattern, httpapi.PublicNotes(noteSystem))
+	router.Public(httpapi.PublicNotesPattern, httpapi.PublicNotes(noteSystem), identity.PublicOptions{RateLimit: identity.RateLimit{Requests: 60, Per: time.Minute}})
 	router.Service(httpapi.StatusPattern, access.DiagnosticsRead, httpapi.Status(diagnosticSystem))
 	router.Private(httpapi.ListNotesPattern, access.NotesRead, httpapi.ListNotes(noteSystem, profiles))
 	router.Private(httpapi.CreateNotePattern, access.NotesWrite, httpapi.CreateNote(noteSystem, profiles))
