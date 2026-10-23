@@ -55,6 +55,9 @@ func TestFrontend(t *testing.T) {
 				if response.Code != test.status || cacheControl != test.cacheControl {
 					t.Fatalf("status=%d cache-control=%q", response.Code, cacheControl)
 				}
+				if entityTag := response.Header().Get("ETag"); test.status == http.StatusNotFound && entityTag != "" {
+					t.Fatalf("404 sent ETag %q", entityTag)
+				}
 			})
 		}
 	}
