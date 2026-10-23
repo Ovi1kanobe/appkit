@@ -124,6 +124,10 @@ func TestRouter(t *testing.T) {
 	router.Public("GET /files/", ok)
 	router.Public("GET /health", echo, identity.PublicOptions{Probe: true})
 	router.Public("GET /public/limited", ok, identity.PublicOptions{CrossOrigin: true, RateLimit: identity.RateLimit{Requests: 2, Per: time.Minute}})
+	// A table of two callers, so three fill it past its cap.
+	defaultKeys := identity.SetRouterRateLimitKeys(router, 2)
+	router.Public("GET /public/capped", ok, identity.PublicOptions{RateLimit: identity.RateLimit{Requests: 1, Per: time.Minute}})
+	identity.SetRouterRateLimitKeys(router, defaultKeys)
 	slog.SetDefault(defaultLogger)
 	for _, line := range []string{
 		`"msg":"AppKit public route","pattern":"GET /public/echo","subtree":false,"probe":false,"cross_origin":false,"rate_limit":""`,
@@ -136,8 +140,8 @@ func TestRouter(t *testing.T) {
 			t.Fatalf("mount log missing %s in:\n%s", line, mountLog.String())
 		}
 	}
-	if count := strings.Count(mountLog.String(), "AppKit public route"); count != 7 {
-		t.Fatalf("%d public route lines, want 7", count)
+	if count := strings.Count(mountLog.String(), "AppKit public route"); count != 8 {
+		t.Fatalf("%d public route lines, want 8", count)
 	}
 
 	readJSON := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -259,7 +263,7 @@ func TestRouter(t *testing.T) {
 	}{
 		{"public under the limit served", "header:X-Forwarded-For", "/public/limited", nil, forwarded("203.0.113.7"), 0, 200, "ok", map[string]string{"Retry-After": ""}},
 		{"public up to the limit served", "", "/public/limited", nil, forwarded("203.0.113.7"), 0, 200, "ok", nil},
-		{"public after the limit 429 with Retry-After", "", "/public/limited", nil, forwarded("203.0.113.7"), 0, 429, tooMany, map[string]string{"Retry-After": "30", "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"}},
+		{"public after the limit 429 with Retry-After", "", "/public/limited", nil, forwarded("203.0.113.7"), 0, 429, tooMany, map[string]string{"Retry-After": "30", "Access-Control-Allow-Origin": "*", "Access-Control-Expose-Headers": "Retry-After", "Cache-Control": "no-store"}},
 		{"public forged earlier forwarded entry changes nothing", "", "/public/limited", nil, forwarded("198.51.100.1, 203.0.113.7"), 0, 429, tooMany, nil},
 		{"public second address unaffected", "", "/public/limited", nil, forwarded("203.0.113.8"), 0, 200, "ok", nil},
 		{"public named single-valued header", "header:CF-Connecting-IP", "/public/limited", nil, map[string]string{"CF-Connecting-IP": "203.0.113.9", "X-Forwarded-For": "203.0.113.7"}, 0, 200, "ok", nil},
@@ -267,6 +271,15 @@ func TestRouter(t *testing.T) {
 		{"public remote up to the limit", "", "/public/limited", nil, nil, 0, 200, "ok", nil},
 		{"public remote after the limit", "", "/public/limited", nil, nil, 0, 429, tooMany, nil},
 		{"public refilled after Per", "header:X-Forwarded-For", "/public/limited", nil, forwarded("203.0.113.7"), time.Minute, 200, "ok", nil},
+		{"public IPv6 client served", "", "/public/limited", nil, forwarded("2001:db8:1:2::1"), 0, 200, "ok", nil},
+		{"public IPv6 client rotating within its /64 served once more", "", "/public/limited", nil, forwarded("2001:db8:1:2::abcd"), 0, 200, "ok", nil},
+		{"public IPv6 /64 shares one bucket", "", "/public/limited", nil, forwarded("[2001:db8:1:2:ffff::9]:443"), 0, 429, tooMany, nil},
+		{"public another IPv6 /64 unaffected", "", "/public/limited", nil, forwarded("2001:db8:1:3::1"), 0, 200, "ok", nil},
+		{"public capped table first caller", "", "/public/capped", nil, forwarded("203.0.113.10"), 0, 200, "ok", nil},
+		{"public capped table second caller", "", "/public/capped", nil, forwarded("203.0.113.11"), 0, 200, "ok", nil},
+		{"public capped table full still serves a new caller", "", "/public/capped", nil, forwarded("203.0.113.12"), 0, 200, "ok", nil},
+		{"public capped table evicted the oldest caller", "", "/public/capped", nil, forwarded("203.0.113.10"), 0, 200, "ok", nil},
+		{"public capped table kept the new caller", "", "/public/capped", nil, forwarded("203.0.113.12"), 0, 429, tooMany, nil},
 		{"private unauthenticated flood answers 401", "", "/private/limited", nil, nil, 0, 401, `{"error":"Sign in required."}`, nil},
 		{"private unauthenticated flood still 401", "", "/private/limited", nil, nil, 0, 401, `{"error":"Sign in required."}`, nil},
 		{"private flood spent none of a person's tokens", "", "/private/limited", cookie, nil, 0, 200, "ok", nil},
@@ -334,10 +347,11 @@ func mustHost(t *testing.T, origin string) string {
 	return parsed.Host
 }
 
-// mustClientAddress parses a CLIENT_ADDRESS value as config does.
+// mustClientAddress parses a CLIENT_ADDRESS value as config does, trusting
+// 192.0.2.1, the connection address httptest.NewRequest gives a request.
 func mustClientAddress(t testing.TB, value string) func(*http.Request) string {
 	t.Helper()
-	clientAddress, err := config.ParseClientAddress(value)
+	clientAddress, err := config.ParseClientAddress(value, "192.0.2.1")
 	if err != nil {
 		t.Fatal(err)
 	}
