@@ -95,6 +95,24 @@ func TestRoutes(t *testing.T) {
 			t.Fatalf("%s: keys offered while nothing is delegable: %s", step.name, body)
 		}
 	}
+	// Health answers a probe that reaches the app by address, and a page is the
+	// shell, revalidated against its ETag.
+	probe, _ := http.NewRequest("GET", app.URL+"/api/health", nil)
+	probe.Host = "10.0.0.5:8080"
+	page, _ := http.NewRequest("GET", app.URL+"/account", nil)
+	for _, request := range []*http.Request{probe, page} {
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != 200 {
+			t.Fatalf("%s: %d", request.URL.Path, response.StatusCode)
+		}
+		if request == page && (response.Header.Get("Cache-Control") != "no-cache" || response.Header.Get("ETag") == "") {
+			t.Fatalf("page cache-control %q etag %q", response.Header.Get("Cache-Control"), response.Header.Get("ETag"))
+		}
+	}
 	// The session request recorded the member's profile.
 	recorded, err := profiles.Lookup(ctx, []string{"sam"})
 	if err != nil || recorded["sam"].Email != "sam@example.test" {

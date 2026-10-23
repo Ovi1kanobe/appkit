@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Ovi1kanobe/appkit/api"
 	"github.com/Ovi1kanobe/appkit/authz"
 	"github.com/Ovi1kanobe/appkit/config"
 	httpapi "github.com/Ovi1kanobe/appkit/examples/starter/api/http"
@@ -154,7 +155,7 @@ func recordProfile(profiles *userprofiles.System) func(*http.Request, identity.I
 // for a guarded kind, its permission. The frontend is the one public subtree,
 // mounted last.
 func routes(sessions *identity.Sessions, pages http.Handler) http.Handler {
-	router := sessions.Router()
+	router := sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit})
 	router.Public(httpapi.HealthPattern, httpapi.Health(), identity.PublicOptions{Probe: true})
 	router.Public(httpapi.FrontendPattern, pages)
 	return router
