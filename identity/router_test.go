@@ -17,6 +17,7 @@ import (
 
 	"github.com/Ovi1kanobe/appkit/api"
 	"github.com/Ovi1kanobe/appkit/authz"
+	"github.com/Ovi1kanobe/appkit/config"
 	"github.com/Ovi1kanobe/appkit/identity"
 	"github.com/Ovi1kanobe/appkit/identity/identitytest"
 )
@@ -28,7 +29,7 @@ func TestRouter(t *testing.T) {
 	provider := identitytest.NewProvider(t)
 	app := httptest.NewServer(nil)
 	defer app.Close()
-	policy, _ := authz.New(map[string][]string{"observer": {"diagnostics.read", "notes.write"}}, map[string][]string{"observers": {"observer"}}, nil, []string{"diagnostics.read"})
+	policy, _ := authz.New(map[string][]string{"observer": {"diagnostics.read", "notes.write"}}, map[string][]string{"observers": {"observer"}}, map[string][]string{"monitor": {"observer"}}, []string{"diagnostics.read"})
 	sessions, err := identity.NewSessions(context.Background(), identity.SessionConfig{Issuer: provider.Issuer, ClientID: provider.ClientID, Origin: app.URL, DatabasePath: filepath.Join(t.TempDir(), "sessions.sqlite"), Policy: policy})
 	if err != nil {
 		t.Fatal(err)
@@ -36,7 +37,9 @@ func TestRouter(t *testing.T) {
 	defer sessions.Close()
 	// A small limit, so the 413 case shows the config's value is the one applied.
 	const bodyLimit = 64 << 10
-	router := sessions.Router(identity.RouterConfig{BodyLimit: bodyLimit})
+	// Each rate limit row names the CLIENT_ADDRESS rule public limits read.
+	clientAddress := mustClientAddress(t, "header:X-Forwarded-For")
+	router := sessions.Router(identity.RouterConfig{BodyLimit: bodyLimit, ClientAddress: func(request *http.Request) string { return clientAddress(request) }})
 	app.Config.Handler = router
 	// Rate limits read this clock, so the refill case advances it instead of sleeping.
 	clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -89,7 +92,10 @@ func TestRouter(t *testing.T) {
 		{func() { router.Private("POST /{collection}/login", "diagnostics.read", ok) }, `conflicts with pattern "POST /auth/"`},
 		{func() { sessions.Router(identity.RouterConfig{}) }, `identity: Sessions.Router needs a BodyLimit above zero; pass one such as api.DefaultBodyLimit`},
 		{func() { sessions.Router(identity.RouterConfig{BodyLimit: -1}) }, `identity: Sessions.Router needs a BodyLimit above zero`},
-		{func() { sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit}) }, `identity: Sessions.Router called twice; mount every route on the one router`},
+		{func() { sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit}) }, `identity: Sessions.Router needs a ClientAddress; pass appKit.ClientAddress, read from CLIENT_ADDRESS`},
+		{func() {
+			sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit, ClientAddress: mustClientAddress(t, "remote")})
+		}, `identity: Sessions.Router called twice; mount every route on the one router`},
 	} {
 		func() {
 			defer func() {
@@ -154,6 +160,8 @@ func TestRouter(t *testing.T) {
 	leaving := provider.SignIn(t, app.URL, identitytest.User{Subject: "bob", Groups: []string{"observers"}})
 	_, key := provider.CreateKey(t, app.URL, cookie, "ci", "diagnostics.read")
 	token := provider.AccessToken(t, alice)
+	carol := provider.SignIn(t, app.URL, identitytest.User{Subject: "carol", Groups: []string{"observers"}})
+	monitor := provider.ClientToken(t, "monitor", provider.ClientID)
 	overLimit := `{"pad":"` + strings.Repeat("p", bodyLimit) + `"}`
 	fixed := map[string]string{"Cache-Control": "no-store", "Referrer-Policy": "same-origin", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "frame-ancestors 'none'", "X-Frame-Options": "DENY", "Strict-Transport-Security": ""}
 	sameOrigin := map[string]string{"Origin": app.URL, "Content-Type": "application/json"}
@@ -233,35 +241,52 @@ func TestRouter(t *testing.T) {
 		})
 	}
 
-	// Rate limits, in order against one clock: each address has its own bucket,
-	// a refused request costs a token before any authentication, and Per refills.
+	// Rate limits, in order against one clock: a public route counts per client
+	// address as the row's CLIENT_ADDRESS rule reads it, a private or service
+	// route per identity subject after authentication, and Per refills.
 	tooMany := `{"error":"Too many requests; try again later."}`
+	forwarded := func(address string) map[string]string { return map[string]string{"X-Forwarded-For": address} }
 	for _, test := range []struct {
-		name     string
-		path     string
-		headers  map[string]string
-		advance  time.Duration // moves the clock before the request
-		status   int
-		contains string
-		want     map[string]string // response headers; an empty value means absent
+		name          string
+		clientAddress string // the CLIENT_ADDRESS rule from this row on; empty keeps the last
+		path          string
+		cookie        *http.Cookie
+		headers       map[string]string
+		advance       time.Duration // moves the clock before the request
+		status        int
+		contains      string
+		want          map[string]string // response headers; an empty value means absent
 	}{
-		{"under the limit served", "/public/limited", map[string]string{"X-Forwarded-For": "203.0.113.7"}, 0, 200, "ok", map[string]string{"Retry-After": ""}},
-		{"up to the limit served", "/public/limited", map[string]string{"X-Forwarded-For": "203.0.113.7"}, 0, 200, "ok", nil},
-		{"after the limit 429 with Retry-After", "/public/limited", map[string]string{"X-Forwarded-For": "203.0.113.7"}, 0, 429, tooMany, map[string]string{"Retry-After": "30", "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"}},
-		{"a forged earlier forwarded entry changes nothing", "/public/limited", map[string]string{"X-Forwarded-For": "198.51.100.1, 203.0.113.7"}, 0, 429, tooMany, nil},
-		{"a second address is unaffected", "/public/limited", map[string]string{"X-Forwarded-For": "203.0.113.8"}, 0, 200, "ok", nil},
-		{"X-Real-IP without X-Forwarded-For", "/public/limited", map[string]string{"X-Real-IP": "203.0.113.9"}, 0, 200, "ok", nil},
-		{"refilled after Per", "/public/limited", map[string]string{"X-Forwarded-For": "203.0.113.7"}, time.Minute, 200, "ok", nil},
-		{"private spends a token before authentication", "/private/limited", map[string]string{"X-Forwarded-For": "203.0.113.7"}, 0, 401, `{"error":"Sign in required."}`, nil},
-		{"private honours its limit", "/private/limited", map[string]string{"X-Forwarded-For": "203.0.113.7", "Authorization": "Bearer " + key}, 0, 429, tooMany, map[string]string{"Retry-After": "60"}},
-		{"service spends a token before the token check", "/service/limited", map[string]string{"X-Forwarded-For": "203.0.113.7"}, 0, 401, `{"error":"Sign in required."}`, nil},
-		{"service honours its limit", "/service/limited", map[string]string{"X-Forwarded-For": "203.0.113.7", "Authorization": "Bearer " + token}, 0, 429, tooMany, map[string]string{"Retry-After": "60"}},
-		{"RemoteAddr without forwarded headers", "/service/limited", map[string]string{"Authorization": "Bearer " + token}, 0, 200, "ok", nil},
+		{"public under the limit served", "header:X-Forwarded-For", "/public/limited", nil, forwarded("203.0.113.7"), 0, 200, "ok", map[string]string{"Retry-After": ""}},
+		{"public up to the limit served", "", "/public/limited", nil, forwarded("203.0.113.7"), 0, 200, "ok", nil},
+		{"public after the limit 429 with Retry-After", "", "/public/limited", nil, forwarded("203.0.113.7"), 0, 429, tooMany, map[string]string{"Retry-After": "30", "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"}},
+		{"public forged earlier forwarded entry changes nothing", "", "/public/limited", nil, forwarded("198.51.100.1, 203.0.113.7"), 0, 429, tooMany, nil},
+		{"public second address unaffected", "", "/public/limited", nil, forwarded("203.0.113.8"), 0, 200, "ok", nil},
+		{"public named single-valued header", "header:CF-Connecting-IP", "/public/limited", nil, map[string]string{"CF-Connecting-IP": "203.0.113.9", "X-Forwarded-For": "203.0.113.7"}, 0, 200, "ok", nil},
+		{"public remote ignores forwarded headers", "remote", "/public/limited", nil, forwarded("203.0.113.7"), 0, 200, "ok", nil},
+		{"public remote up to the limit", "", "/public/limited", nil, nil, 0, 200, "ok", nil},
+		{"public remote after the limit", "", "/public/limited", nil, nil, 0, 429, tooMany, nil},
+		{"public refilled after Per", "header:X-Forwarded-For", "/public/limited", nil, forwarded("203.0.113.7"), time.Minute, 200, "ok", nil},
+		{"private unauthenticated flood answers 401", "", "/private/limited", nil, nil, 0, 401, `{"error":"Sign in required."}`, nil},
+		{"private unauthenticated flood still 401", "", "/private/limited", nil, nil, 0, 401, `{"error":"Sign in required."}`, nil},
+		{"private flood spent none of a person's tokens", "", "/private/limited", cookie, nil, 0, 200, "ok", nil},
+		{"private key shares its person's bucket", "", "/private/limited", nil, map[string]string{"Authorization": "Bearer " + key}, 0, 429, tooMany, map[string]string{"Retry-After": "60"}},
+		{"private second person has their own bucket", "", "/private/limited", carol, nil, 0, 200, "ok", nil},
+		{"service unauthenticated answers 401", "", "/service/limited", nil, nil, 0, 401, `{"error":"Sign in required."}`, nil},
+		{"service under its limit", "", "/service/limited", nil, map[string]string{"Authorization": "Bearer " + token}, 0, 200, "ok", nil},
+		{"service after its limit", "", "/service/limited", nil, map[string]string{"Authorization": "Bearer " + token}, 0, 429, tooMany, map[string]string{"Retry-After": "60"}},
+		{"service application has its own bucket", "", "/service/limited", nil, map[string]string{"Authorization": "Bearer " + monitor}, 0, 200, "ok", nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.clientAddress != "" {
+				clientAddress = mustClientAddress(t, test.clientAddress)
+			}
 			clock = clock.Add(test.advance)
 			request := httptest.NewRequest("GET", test.path, nil)
 			request.Host = mustHost(t, app.URL)
+			if test.cookie != nil {
+				request.AddCookie(test.cookie)
+			}
 			for name, value := range test.headers {
 				request.Header.Set(name, value)
 			}
@@ -307,4 +332,14 @@ func mustHost(t *testing.T, origin string) string {
 		t.Fatal(err)
 	}
 	return parsed.Host
+}
+
+// mustClientAddress parses a CLIENT_ADDRESS value as config does.
+func mustClientAddress(t testing.TB, value string) func(*http.Request) string {
+	t.Helper()
+	clientAddress, err := config.ParseClientAddress(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return clientAddress
 }
