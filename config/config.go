@@ -9,9 +9,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/textproto"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/Ovi1kanobe/appkit/encryption"
 	"github.com/Ovi1kanobe/appkit/identity"
@@ -138,12 +140,15 @@ func (environment *Environment) AppKit(defaults Defaults) AppKit {
 			DatabasePath: environment.Optional("SESSION_DATABASE", "appkit-sessions.sqlite", "AppKit session database file"),
 		},
 	}
-	if value := environment.Required("CLIENT_ADDRESS", "where a request's client address comes from: remote for the connection's address, when nothing sits in front of the app, or header:<Name>, such as header:X-Forwarded-For, for the header the reverse proxy sets"); value != "" {
-		clientAddress, err := ParseClientAddress(value)
-		if err != nil {
-			environment.Invalid("CLIENT_ADDRESS", err.Error())
+	clientAddress := environment.Required("CLIENT_ADDRESS", "where a request's client address comes from: remote for the connection's address, when nothing sits in front of the app, or header:<Name>, such as header:X-Forwarded-For, for the header the reverse proxy sets")
+	trustedProxies := environment.Optional("TRUSTED_PROXIES", "", "comma-separated addresses or CIDR ranges of the reverse proxies, such as 127.0.0.1,::1; required when CLIENT_ADDRESS uses header:<Name>")
+	if clientAddress != "" {
+		rule, err := ParseClientAddress(clientAddress, trustedProxies)
+		var invalid *VariableError
+		if errors.As(err, &invalid) {
+			environment.Invalid(invalid.Name, invalid.Reason)
 		}
-		appKit.ClientAddress = clientAddress
+		appKit.ClientAddress = rule
 	}
 	if encoded := environment.Required("APP_MASTER_KEY", "base64 key that encrypts stored credentials; create with openssl rand -base64 32 and keep a copy outside the server"); encoded != "" {
 		key, err := encryption.ParseKey(encoded)
@@ -155,46 +160,152 @@ func (environment *Environment) AppKit(defaults Defaults) AppKit {
 	return appKit
 }
 
-// ParseClientAddress reads a CLIENT_ADDRESS value into the rule that returns
-// the address a request came from. It accepts exactly two forms: remote, the
-// host of the connection's remote address, for an app nothing sits in front
-// of; and header:<Name>, the last comma-separated entry of the named header,
-// so header:X-Forwarded-For takes the entry the app's own reverse proxy
-// appended, which the client cannot forge. A request without the header
-// returns "".
-func ParseClientAddress(value string) (func(*http.Request) string, error) {
-	value = strings.TrimSpace(value)
-	if value == "remote" {
-		return remoteAddress, nil
-	}
-	if name, found := strings.CutPrefix(value, "header:"); found && validHeaderName(name) {
-		name = textproto.CanonicalMIMEHeaderKey(name)
-		return func(request *http.Request) string { return lastHeaderEntry(request.Header.Values(name)) }, nil
-	}
-	return nil, fmt.Errorf("must be remote, for the connection's address when nothing sits in front of the app, or header:<Name>, such as header:X-Forwarded-For, for the header the reverse proxy sets; got %q", value)
+// VariableError is a value ParseClientAddress refuses, naming the variable
+// it came from and why.
+type VariableError struct {
+	Name, Reason string
 }
 
-// remoteAddress is the host of the request's remote address, or the whole
-// address when it has no port.
-func remoteAddress(request *http.Request) string {
-	host, _, err := net.SplitHostPort(request.RemoteAddr)
+func (err *VariableError) Error() string { return err.Name + " is invalid: " + err.Reason }
+
+// unusableHeaders cannot carry a client address: each holds the request's
+// own host, credentials, or framing, never the address a proxy appends.
+var unusableHeaders = []string{"Host", "Authorization", "Proxy-Authorization", "Cookie", "Content-Length", "Transfer-Encoding", "Connection"}
+
+// ParseClientAddress reads CLIENT_ADDRESS and TRUSTED_PROXIES into the rule
+// that returns the address a request came from, as the key one caller's rate
+// limit is counted under. CLIENT_ADDRESS takes exactly two forms:
+//
+//   - remote: the connection's address, for an app nothing sits in front of.
+//     TRUSTED_PROXIES is ignored.
+//   - header:<Name>: the named header, believed only from a connection whose
+//     address TRUSTED_PROXIES lists. Its comma-separated entries are walked
+//     from the right, each trusted proxy skipped, and the first other entry
+//     taken, so header:X-Forwarded-For takes the address the outermost
+//     trusted proxy saw, which the client cannot forge. An untrusted
+//     connection, or one whose entries are all trusted, is keyed by its own
+//     address.
+//
+// Each address loses its port, IPv4 is unmapped from IPv6, and IPv6 is cut to
+// its /64, since one network is one caller; a value that is not an address is
+// used as is. An error is a *VariableError.
+func ParseClientAddress(clientAddress, trustedProxies string) (func(*http.Request) string, error) {
+	clientAddress = strings.TrimSpace(clientAddress)
+	if clientAddress == "remote" {
+		return func(request *http.Request) string { return addressKey(request.RemoteAddr) }, nil
+	}
+	name, found := strings.CutPrefix(clientAddress, "header:")
+	if !found || !validHeaderName(name) {
+		return nil, &VariableError{"CLIENT_ADDRESS", fmt.Sprintf("must be remote, for the connection's address when nothing sits in front of the app, or header:<Name>, such as header:X-Forwarded-For, for the header the reverse proxy sets; got %q", clientAddress)}
+	}
+	name = textproto.CanonicalMIMEHeaderKey(name)
+	for _, unusable := range unusableHeaders {
+		if name == unusable {
+			return nil, &VariableError{"CLIENT_ADDRESS", fmt.Sprintf("header:%s cannot carry a client address; use the header the reverse proxy sets, such as header:X-Forwarded-For", name)}
+		}
+	}
+	trusted, err := parseTrustedProxies(trustedProxies)
 	if err != nil {
-		return request.RemoteAddr
+		return nil, err
 	}
-	return host
+	var warnMissing sync.Once
+	return func(request *http.Request) string {
+		connection, parsed := parseAddress(request.RemoteAddr)
+		if !parsed || !containsAddress(trusted, connection) {
+			return addressKey(request.RemoteAddr)
+		}
+		entries := strings.Split(strings.Join(request.Header.Values(name), ","), ",")
+		sawEntry := false
+		for index := len(entries) - 1; index >= 0; index-- {
+			entry := strings.TrimSpace(entries[index])
+			if entry == "" {
+				continue
+			}
+			sawEntry = true
+			if address, parsed := parseAddress(entry); parsed && containsAddress(trusted, address) {
+				continue
+			}
+			return addressKey(entry)
+		}
+		if !sawEntry {
+			warnMissing.Do(func() {
+				slog.Warn("AppKit client address header missing: the reverse proxy is not setting it, so every caller through the proxy shares one rate limit bucket", "header", name, "path", request.URL.Path)
+			})
+		}
+		return addressKey(request.RemoteAddr)
+	}, nil
 }
 
-// lastHeaderEntry is the last comma-separated entry across a header's lines,
-// trimmed: the one the nearest proxy appended.
-func lastHeaderEntry(lines []string) string {
-	if len(lines) == 0 {
-		return ""
+// parseTrustedProxies reads TRUSTED_PROXIES: comma-separated addresses or
+// CIDR ranges, at least one.
+func parseTrustedProxies(value string) ([]netip.Prefix, error) {
+	var trusted []netip.Prefix
+	for _, entry := range strings.Split(value, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if strings.Contains(entry, "/") {
+			prefix, err := netip.ParsePrefix(entry)
+			if err != nil {
+				return nil, &VariableError{"TRUSTED_PROXIES", fmt.Sprintf("%q is not an address or CIDR range, such as 127.0.0.1 or 10.0.1.0/24", entry)}
+			}
+			if prefix.Addr().Is4In6() {
+				prefix = netip.PrefixFrom(prefix.Addr().Unmap(), max(0, prefix.Bits()-96))
+			}
+			trusted = append(trusted, prefix.Masked())
+			continue
+		}
+		address, err := netip.ParseAddr(entry)
+		if err != nil {
+			return nil, &VariableError{"TRUSTED_PROXIES", fmt.Sprintf("%q is not an address or CIDR range, such as 127.0.0.1 or 10.0.1.0/24", entry)}
+		}
+		address = address.Unmap().WithZone("")
+		trusted = append(trusted, netip.PrefixFrom(address, address.BitLen()))
 	}
-	last := lines[len(lines)-1]
-	if comma := strings.LastIndex(last, ","); comma >= 0 {
-		last = last[comma+1:]
+	if len(trusted) == 0 {
+		return nil, &VariableError{"TRUSTED_PROXIES", "must list the reverse proxy's addresses or ranges, such as 127.0.0.1,::1, when CLIENT_ADDRESS uses header:<Name>"}
 	}
-	return strings.TrimSpace(last)
+	return trusted, nil
+}
+
+// containsAddress reports whether address is within any trusted range.
+func containsAddress(trusted []netip.Prefix, address netip.Addr) bool {
+	for _, prefix := range trusted {
+		if prefix.Contains(address) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseAddress reads an address with or without a port, IPv6 with or
+// without brackets, unmapping IPv4 from IPv6 and dropping any zone.
+func parseAddress(value string) (netip.Addr, bool) {
+	value = strings.TrimSpace(value)
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		value = host
+	}
+	value = strings.TrimSuffix(strings.TrimPrefix(value, "["), "]")
+	address, err := netip.ParseAddr(value)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return address.Unmap().WithZone(""), true
+}
+
+// addressKey is the key one caller is counted under: the bare address, or
+// for IPv6 its /64 network; a value that is not an address is used as is.
+func addressKey(value string) string {
+	address, parsed := parseAddress(value)
+	if !parsed {
+		return strings.TrimSpace(value)
+	}
+	if address.Is6() {
+		network, _ := address.Prefix(64)
+		return network.String()
+	}
+	return address.String()
 }
 
 // validHeaderName reports whether name is a non-empty HTTP header name: only
