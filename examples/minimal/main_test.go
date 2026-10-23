@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -159,6 +160,71 @@ func TestRoutes(t *testing.T) {
 		if strings.Join(keys, ",") != "created_at,id,text" {
 			t.Fatalf("public note keys %v, want created_at, id, text", keys)
 		}
+	}
+	// A visitor on any origin posts a note signed out: it is the public
+	// subject's, answered with exactly the public fields, shown to members as
+	// no one's, and deleted by no member. Preflights are free, and the sixth
+	// post in a minute from one address is refused.
+	publicNotesPath := httpapi.CreatePublicNotePattern[len("POST "):]
+	visitor := func(method, contentType, body string) (int, http.Header, string) {
+		t.Helper()
+		request, err := http.NewRequest(method, app.URL+publicNotesPath, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Origin", "https://visitor.example")
+		if method == http.MethodOptions {
+			request.Header.Set("Access-Control-Request-Method", "POST")
+			request.Header.Set("Access-Control-Request-Headers", "content-type")
+		}
+		if contentType != "" {
+			request.Header.Set("Content-Type", contentType)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		data, _ := io.ReadAll(response.Body)
+		return response.StatusCode, response.Header, string(data)
+	}
+	status, header, body := visitor("POST", "application/json", `{"text":"from a visitor"}`)
+	var visitorNote map[string]any
+	if err := json.Unmarshal([]byte(body), &visitorNote); status != 201 || err != nil || header.Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("visitor note: %d %q %v %v", status, body, err, header)
+	}
+	if keys := slices.Sorted(maps.Keys(visitorNote)); strings.Join(keys, ",") != "created_at,id,text" {
+		t.Fatalf("visitor note keys %v, want created_at, id, text", keys)
+	}
+	visitorNoteID := int64(visitorNote["id"].(float64))
+	if note, err := noteSystem.Get(ctx, visitorNoteID); err != nil || note.CreatedBy != identity.PublicSubject {
+		t.Fatalf("visitor note author: %+v %v", note, err)
+	}
+	_, body = send(aliceCookie, "GET", "/api/notes", "")
+	var memberNotes []access.Note
+	if err := json.Unmarshal([]byte(body), &memberNotes); err != nil {
+		t.Fatalf("notes as alice: %q %v", body, err)
+	}
+	seen := slices.IndexFunc(memberNotes, func(note access.Note) bool { return note.ID == visitorNoteID })
+	if seen < 0 || memberNotes[seen].AuthorEmail != "" || memberNotes[seen].Mine {
+		t.Fatalf("visitor note as alice: %s", body)
+	}
+	if status, _ := send(aliceCookie, "DELETE", fmt.Sprintf("/api/notes/%d", visitorNoteID), ""); status != 403 {
+		t.Fatalf("alice deleted the visitor note: %d", status)
+	}
+	if status, _, body := visitor("POST", "", `{"text":"no content type"}`); status != 415 || body != `{"error":"Send JSON with Content-Type: application/json."}`+"\n" {
+		t.Fatalf("visitor note without the JSON content type: %d %q", status, body)
+	}
+	if status, header, _ := visitor("OPTIONS", "", ""); status != 204 || header.Get("Access-Control-Allow-Methods") != "GET, HEAD, POST" || header.Get("Access-Control-Allow-Headers") != "Content-Type" {
+		t.Fatalf("visitor preflight: %d %v", status, header)
+	}
+	for count := 3; count <= 5; count++ {
+		if status, _, body := visitor("POST", "application/json", `{"text":"again"}`); status != 201 {
+			t.Fatalf("visitor note %d: %d %q", count, status, body)
+		}
+	}
+	if status, header, _ := visitor("POST", "application/json", `{"text":"one too many"}`); status != 429 || header.Get("Retry-After") == "" {
+		t.Fatalf("sixth visitor note in a minute: %d %v", status, header)
 	}
 	// A key a member made reaches the routes its scope covers as that member,
 	// is refused where its scope does not reach, and ends when revoked.
