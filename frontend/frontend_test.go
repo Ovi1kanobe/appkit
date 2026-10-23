@@ -37,19 +37,26 @@ func TestFrontend(t *testing.T) {
 			t.Fatalf("unsafe path %s returned %d", target, response.Code)
 		}
 	}
+	// A router's public route sets no-store by default; the frontend must override it, except on a 404.
+	routeWithNoStoreDefault := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Cache-Control", "no-store")
+		handler.ServeHTTP(writer, request)
+	})
 	for _, test := range []struct {
 		path         string
 		status       int
 		cacheControl string
-	}{{"/", 200, "no-cache"}, {"/index.html", 200, "no-cache"}, {"/bots/123", 200, "no-cache"}, {"/manifest.webmanifest", 200, "no-cache"}, {"/assets/app.js", 200, "public, max-age=31536000, immutable"}, {"/assets/missing.js", 404, ""}} {
-		t.Run("cache "+test.path, func(t *testing.T) {
-			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, httptest.NewRequest("GET", test.path, nil))
-			cacheControl := response.Header().Get("Cache-Control")
-			if response.Code != test.status || strings.Contains(cacheControl, "immutable") && test.status != 200 || test.cacheControl != "" && cacheControl != test.cacheControl {
-				t.Fatalf("status=%d cache-control=%q", response.Code, cacheControl)
-			}
-		})
+	}{{"/", 200, "no-cache"}, {"/index.html", 200, "no-cache"}, {"/bots/123", 200, "no-cache"}, {"/manifest.webmanifest", 200, "no-cache"}, {"/assets/app.js", 200, "public, max-age=31536000, immutable"}, {"/assets/missing.js", 404, "no-store"}} {
+		for _, method := range []string{"GET", "HEAD"} {
+			t.Run("cache "+method+" "+test.path, func(t *testing.T) {
+				response := httptest.NewRecorder()
+				routeWithNoStoreDefault.ServeHTTP(response, httptest.NewRequest(method, test.path, nil))
+				cacheControl := response.Header().Get("Cache-Control")
+				if response.Code != test.status || cacheControl != test.cacheControl {
+					t.Fatalf("status=%d cache-control=%q", response.Code, cacheControl)
+				}
+			})
+		}
 	}
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest("POST", "/bots/123", nil))
