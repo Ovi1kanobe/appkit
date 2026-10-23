@@ -29,7 +29,7 @@ func TestRouter(t *testing.T) {
 	provider := identitytest.NewProvider(t)
 	app := httptest.NewServer(nil)
 	defer app.Close()
-	policy, _ := authz.New(map[string][]string{"observer": {"diagnostics.read", "notes.write"}}, map[string][]string{"observers": {"observer"}}, map[string][]string{"monitor": {"observer"}}, []string{"diagnostics.read"})
+	policy, _ := authz.New(map[string][]string{"observer": {"diagnostics.read", "notes.write"}, "writer": {"notes.write"}}, map[string][]string{"observers": {"observer"}, "writers": {"writer"}}, map[string][]string{"monitor": {"observer"}}, []string{"diagnostics.read"})
 	sessions, err := identity.NewSessions(context.Background(), identity.SessionConfig{Issuer: provider.Issuer, ClientID: provider.ClientID, Origin: app.URL, DatabasePath: filepath.Join(t.TempDir(), "sessions.sqlite"), Policy: policy})
 	if err != nil {
 		t.Fatal(err)
@@ -165,6 +165,7 @@ func TestRouter(t *testing.T) {
 	_, key := provider.CreateKey(t, app.URL, cookie, "ci", "diagnostics.read")
 	token := provider.AccessToken(t, alice)
 	carol := provider.SignIn(t, app.URL, identitytest.User{Subject: "carol", Groups: []string{"observers"}})
+	writer := provider.SignIn(t, app.URL, identitytest.User{Subject: "dave", Groups: []string{"writers"}}) // lacks diagnostics.read
 	monitor := provider.ClientToken(t, "monitor", provider.ClientID)
 	overLimit := `{"pad":"` + strings.Repeat("p", bodyLimit) + `"}`
 	fixed := map[string]string{"Cache-Control": "no-store", "Referrer-Policy": "same-origin", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "frame-ancestors 'none'", "X-Frame-Options": "DENY", "Strict-Transport-Security": ""}
@@ -265,6 +266,7 @@ func TestRouter(t *testing.T) {
 		{"public up to the limit served", "", "/public/limited", nil, forwarded("203.0.113.7"), 0, 200, "ok", nil},
 		{"public after the limit 429 with Retry-After", "", "/public/limited", nil, forwarded("203.0.113.7"), 0, 429, tooMany, map[string]string{"Retry-After": "30", "Access-Control-Allow-Origin": "*", "Access-Control-Expose-Headers": "Retry-After", "Cache-Control": "no-store"}},
 		{"public forged earlier forwarded entry changes nothing", "", "/public/limited", nil, forwarded("198.51.100.1, 203.0.113.7"), 0, 429, tooMany, nil},
+		{"public 429 comes before the Host check", "", "/public/limited", nil, map[string]string{"X-Forwarded-For": "203.0.113.7", "Host": "wrong.example"}, 0, 429, tooMany, nil},
 		{"public second address unaffected", "", "/public/limited", nil, forwarded("203.0.113.8"), 0, 200, "ok", nil},
 		{"public named single-valued header", "header:CF-Connecting-IP", "/public/limited", nil, map[string]string{"CF-Connecting-IP": "203.0.113.9", "X-Forwarded-For": "203.0.113.7"}, 0, 200, "ok", nil},
 		{"public remote ignores forwarded headers", "remote", "/public/limited", nil, forwarded("203.0.113.7"), 0, 200, "ok", nil},
@@ -285,6 +287,8 @@ func TestRouter(t *testing.T) {
 		{"private flood spent none of a person's tokens", "", "/private/limited", cookie, nil, 0, 200, "ok", nil},
 		{"private key shares its person's bucket", "", "/private/limited", nil, map[string]string{"Authorization": "Bearer " + key}, 0, 429, tooMany, map[string]string{"Retry-After": "60"}},
 		{"private second person has their own bucket", "", "/private/limited", carol, nil, 0, 200, "ok", nil},
+		{"private without the permission spends a token", "", "/private/limited", writer, nil, 0, 403, `{"error":"You don't have permission for this."}`, nil},
+		{"private 429 comes before the permission check", "", "/private/limited", writer, nil, 0, 429, tooMany, nil},
 		{"service unauthenticated answers 401", "", "/service/limited", nil, nil, 0, 401, `{"error":"Sign in required."}`, nil},
 		{"service under its limit", "", "/service/limited", nil, map[string]string{"Authorization": "Bearer " + token}, 0, 200, "ok", nil},
 		{"service after its limit", "", "/service/limited", nil, map[string]string{"Authorization": "Bearer " + token}, 0, 429, tooMany, map[string]string{"Retry-After": "60"}},
@@ -297,6 +301,9 @@ func TestRouter(t *testing.T) {
 			clock = clock.Add(test.advance)
 			request := httptest.NewRequest("GET", test.path, nil)
 			request.Host = mustHost(t, app.URL)
+			if host, found := test.headers["Host"]; found {
+				request.Host = host // a Host header row sets the request's host, which Go keeps outside Header
+			}
 			if test.cookie != nil {
 				request.AddCookie(test.cookie)
 			}
