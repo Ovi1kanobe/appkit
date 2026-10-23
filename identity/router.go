@@ -22,7 +22,10 @@ type Router struct {
 	sessions *Sessions
 	mux      *http.ServeMux
 	handler  http.Handler
-	now      func() time.Time // the clock rate limits read; tests replace it
+	// clientAddress keys public rate limits; now is the clock rate limits
+	// read, which tests replace.
+	clientAddress func(*http.Request) string
+	now           func() time.Time
 }
 
 // RouterConfig configures the router. Every field is required, so what it
@@ -32,6 +35,9 @@ type RouterConfig struct {
 	// JSON. A route that needs another limit wraps its handler in
 	// api.LimitBody.
 	BodyLimit int64
+	// ClientAddress returns the address a request came from, which keys a
+	// public route's RateLimit. config.AppKit reads it from CLIENT_ADDRESS.
+	ClientAddress func(*http.Request) string
 }
 
 // PublicOptions changes how Public serves one route. The zero value is right
@@ -52,14 +58,16 @@ type PublicOptions struct {
 // PrivateOptions changes how Private serves one route. The zero value is
 // the default.
 type PrivateOptions struct {
-	// RateLimit caps how often one client address may call the route.
+	// RateLimit caps how often one person may call the route, through a
+	// session or any of their keys.
 	RateLimit RateLimit
 }
 
 // ServiceOptions changes how Service serves one route. The zero value is
 // the default.
 type ServiceOptions struct {
-	// RateLimit caps how often one client address may call the route.
+	// RateLimit caps how often one caller may call the route: a person, or an
+	// application by its client ID.
 	RateLimit RateLimit
 }
 
@@ -77,6 +85,9 @@ func (s *Sessions) Router(config RouterConfig) *Router {
 	if config.BodyLimit <= 0 {
 		panic("identity: Sessions.Router needs a BodyLimit above zero; pass one such as api.DefaultBodyLimit")
 	}
+	if config.ClientAddress == nil {
+		panic("identity: Sessions.Router needs a ClientAddress; pass appKit.ClientAddress, read from CLIENT_ADDRESS")
+	}
 	s.mu.Lock()
 	routed := s.routed
 	s.routed = true
@@ -84,7 +95,7 @@ func (s *Sessions) Router(config RouterConfig) *Router {
 	if routed {
 		panic("identity: Sessions.Router called twice; mount every route on the one router")
 	}
-	router := &Router{sessions: s, mux: http.NewServeMux(), now: time.Now}
+	router := &Router{sessions: s, mux: http.NewServeMux(), clientAddress: config.ClientAddress, now: time.Now}
 	router.handler = api.LimitBodies(config.BodyLimit, router.mux)
 	s.routes(router.mux)
 	return router
@@ -113,13 +124,14 @@ func (router *Router) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 // never a redirect; without the permission, 403. A browser's mutations and
 // WebSocket upgrades must come from the app's origin; a key's need not. The
 // request context ends when the session or key does. A RateLimit in options
-// refuses an address over it before any of that.
+// counts per person, a session and the person's keys sharing one bucket,
+// after authentication and before the permission check.
 func (router *Router) Private(pattern, permission string, handler http.Handler, options ...PrivateOptions) {
 	checkRoute("Private", pattern, handler)
 	option := oneOption("Private", pattern, "PrivateOptions", options)
 	checkPermission("Private", pattern, permission)
 	checkRateLimit("Private", pattern, option.RateLimit)
-	router.mux.Handle(pattern, rateLimited(option.RateLimit, router.now, router.sessions.require(requirePermission(permission, handler))))
+	router.mux.Handle(pattern, router.sessions.require(rateLimited(option.RateLimit, router.now, subjectKey, requirePermission(permission, handler))))
 }
 
 // Service mounts a route for a caller with a Rauthy access token holding
@@ -127,13 +139,14 @@ func (router *Router) Private(pattern, permission string, handler http.Handler, 
 // person's. It never accepts a session cookie or a personal key, so it skips
 // the Host check, since a browser never attaches the token by itself.
 // Without a valid token it answers 401; without the permission, 403. A
-// RateLimit in options refuses an address over it before the token is read.
+// RateLimit in options counts per caller, an application under its client
+// ID, after the token is verified and before the permission check.
 func (router *Router) Service(pattern, permission string, handler http.Handler, options ...ServiceOptions) {
 	checkRoute("Service", pattern, handler)
 	option := oneOption("Service", pattern, "ServiceOptions", options)
 	checkPermission("Service", pattern, permission)
 	checkRateLimit("Service", pattern, option.RateLimit)
-	router.mux.Handle(pattern, rateLimited(option.RateLimit, router.now, router.sessions.bearer(requirePermission(permission, handler))))
+	router.mux.Handle(pattern, router.sessions.bearer(rateLimited(option.RateLimit, router.now, subjectKey, requirePermission(permission, handler))))
 }
 
 // Public mounts a GET route anyone may read. The handler sees no cookie,
@@ -141,7 +154,8 @@ func (router *Router) Service(pattern, permission string, handler http.Handler, 
 // because a public answer is the same for everyone. A request with a Bearer
 // credential answers 400, since its caller meant another route, and so does
 // a WebSocket upgrade. The Host check stays unless options say Probe. A
-// RateLimit refuses an address over it before the Host check. Each public
+// RateLimit counts per client address, as RouterConfig.ClientAddress reads
+// it, and refuses an address over it before the Host check. Each public
 // route is logged once at mount, so the log lists them.
 func (router *Router) Public(pattern string, handler http.Handler, options ...PublicOptions) {
 	method, path := checkRoute("Public", pattern, handler)
@@ -160,7 +174,7 @@ func (router *Router) Public(pattern string, handler http.Handler, options ...Pu
 		served = router.sessions.boundary(served)
 	}
 	// Inside allowAnyOrigin, so a cross-origin page can read the 429 too.
-	served = rateLimited(option.RateLimit, router.now, served)
+	served = rateLimited(option.RateLimit, router.now, router.clientAddress, served)
 	if option.CrossOrigin {
 		served = allowAnyOrigin(served)
 	}
