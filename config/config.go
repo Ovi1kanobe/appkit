@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/textproto"
 	"os"
 	"strings"
 
@@ -106,6 +109,10 @@ type AppKit struct {
 	App       AppSettings
 	Sessions  identity.SessionConfig // the application still sets Policy, and may set KeyLifetime and KeyAdminPermission
 	MasterKey *encryption.Key        // nil when APP_MASTER_KEY is missing or invalid; Check reports why
+	// ClientAddress returns the address a request came from, for
+	// identity.RouterConfig; nil when CLIENT_ADDRESS is missing or invalid,
+	// and Check reports why.
+	ClientAddress func(*http.Request) string
 }
 
 // AppKit declares and reads every AppKit variable. An application usually
@@ -131,6 +138,13 @@ func (environment *Environment) AppKit(defaults Defaults) AppKit {
 			DatabasePath: environment.Optional("SESSION_DATABASE", "appkit-sessions.sqlite", "AppKit session database file"),
 		},
 	}
+	if value := environment.Required("CLIENT_ADDRESS", "where a request's client address comes from: remote for the connection's address, when nothing sits in front of the app, or header:<Name>, such as header:X-Forwarded-For, for the header the reverse proxy sets"); value != "" {
+		clientAddress, err := ParseClientAddress(value)
+		if err != nil {
+			environment.Invalid("CLIENT_ADDRESS", err.Error())
+		}
+		appKit.ClientAddress = clientAddress
+	}
 	if encoded := environment.Required("APP_MASTER_KEY", "base64 key that encrypts stored credentials; create with openssl rand -base64 32 and keep a copy outside the server"); encoded != "" {
 		key, err := encryption.ParseKey(encoded)
 		if err != nil {
@@ -139,4 +153,61 @@ func (environment *Environment) AppKit(defaults Defaults) AppKit {
 		appKit.MasterKey = key
 	}
 	return appKit
+}
+
+// ParseClientAddress reads a CLIENT_ADDRESS value into the rule that returns
+// the address a request came from. It accepts exactly two forms: remote, the
+// host of the connection's remote address, for an app nothing sits in front
+// of; and header:<Name>, the last comma-separated entry of the named header,
+// so header:X-Forwarded-For takes the entry the app's own reverse proxy
+// appended, which the client cannot forge. A request without the header
+// returns "".
+func ParseClientAddress(value string) (func(*http.Request) string, error) {
+	value = strings.TrimSpace(value)
+	if value == "remote" {
+		return remoteAddress, nil
+	}
+	if name, found := strings.CutPrefix(value, "header:"); found && validHeaderName(name) {
+		name = textproto.CanonicalMIMEHeaderKey(name)
+		return func(request *http.Request) string { return lastHeaderEntry(request.Header.Values(name)) }, nil
+	}
+	return nil, fmt.Errorf("must be remote, for the connection's address when nothing sits in front of the app, or header:<Name>, such as header:X-Forwarded-For, for the header the reverse proxy sets; got %q", value)
+}
+
+// remoteAddress is the host of the request's remote address, or the whole
+// address when it has no port.
+func remoteAddress(request *http.Request) string {
+	host, _, err := net.SplitHostPort(request.RemoteAddr)
+	if err != nil {
+		return request.RemoteAddr
+	}
+	return host
+}
+
+// lastHeaderEntry is the last comma-separated entry across a header's lines,
+// trimmed: the one the nearest proxy appended.
+func lastHeaderEntry(lines []string) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	last := lines[len(lines)-1]
+	if comma := strings.LastIndex(last, ","); comma >= 0 {
+		last = last[comma+1:]
+	}
+	return strings.TrimSpace(last)
+}
+
+// validHeaderName reports whether name is a non-empty HTTP header name: only
+// letters, digits, and the token punctuation RFC 9110 allows.
+func validHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, character := range name {
+		isLetterOrDigit := character < 128 && (character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9')
+		if !isLetterOrDigit && !strings.ContainsRune("!#$%&'*+-.^_`|~", character) {
+			return false
+		}
+	}
+	return true
 }
