@@ -5,8 +5,8 @@ import (
 	"net/http"
 )
 
-// DefaultBodyLimit is the request body size LimitBodies allows on a route with
-// no limit of its own: plenty for a JSON body.
+// DefaultBodyLimit is a request body limit with plenty of room for a JSON
+// body, for identity.RouterConfig.BodyLimit or LimitBodies.
 const DefaultBodyLimit = 1 << 20
 
 // LimitBodies caps every request body at limit bytes, so no handler can be

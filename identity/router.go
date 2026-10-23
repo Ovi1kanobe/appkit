@@ -14,12 +14,21 @@ import (
 // Router is an application's one route table and its HTTP handler. Every
 // route is mounted through Private, Service, or Public, so each line says
 // what guards it; AppKit's own /auth/ routes are already on it. It caps every
-// request body at api.DefaultBodyLimit, and an api.LimitBody on a mounted
+// request body at its config's BodyLimit, and an api.LimitBody on a mounted
 // handler raises or lowers that for its route.
 type Router struct {
 	sessions *Sessions
 	mux      *http.ServeMux
 	handler  http.Handler
+}
+
+// RouterConfig configures the router. Every field is required, so what it
+// does is written on the line that makes it.
+type RouterConfig struct {
+	// BodyLimit caps every request body, in bytes; api.DefaultBodyLimit suits
+	// JSON. A route that needs another limit wraps its handler in
+	// api.LimitBody.
+	BodyLimit int64
 }
 
 // PublicOptions changes how Public serves one route. The zero value is right
@@ -44,7 +53,11 @@ type publicContextKey struct{}
 
 // Router returns the application's router with AppKit's auth routes mounted.
 // It is called once: a second call panics, so no route lives anywhere else.
-func (s *Sessions) Router() *Router {
+// A BodyLimit of zero or less panics, rather than meaning a hidden default.
+func (s *Sessions) Router(config RouterConfig) *Router {
+	if config.BodyLimit <= 0 {
+		panic("identity: Sessions.Router needs a BodyLimit above zero; pass one such as api.DefaultBodyLimit")
+	}
 	s.mu.Lock()
 	routed := s.routed
 	s.routed = true
@@ -53,7 +66,7 @@ func (s *Sessions) Router() *Router {
 		panic("identity: Sessions.Router called twice; mount every route on the one router")
 	}
 	router := &Router{sessions: s, mux: http.NewServeMux()}
-	router.handler = api.LimitBodies(api.DefaultBodyLimit, router.mux)
+	router.handler = api.LimitBodies(config.BodyLimit, router.mux)
 	s.routes(router.mux)
 	return router
 }
@@ -146,6 +159,7 @@ func servePublic(handler http.Handler, option PublicOptions) http.Handler {
 		public.Header.Del("Authorization")
 		public.Header.Del("Proxy-Authorization")
 		public.Trailer = nil
+		public.URL.User = nil // An absolute-form request URL can carry user:password@.
 		if option.CrossOrigin {
 			writer.Header().Set("Access-Control-Allow-Origin", "*")
 		}
@@ -153,16 +167,26 @@ func servePublic(handler http.Handler, option PublicOptions) http.Handler {
 	})
 }
 
-// publicResponseWriter exposes only the plain ResponseWriter methods, neither
-// Hijack nor Unwrap, so a public handler cannot take over the connection.
+// publicResponseWriter exposes the plain ResponseWriter methods and Flush, so
+// a public route can stream, but neither Hijack nor Unwrap, so a public
+// handler cannot take over the connection.
 type publicResponseWriter struct{ writer http.ResponseWriter }
+
+// Flush sends buffered data to the client when the underlying writer can, and
+// does nothing otherwise.
+func (public publicResponseWriter) Flush() {
+	if flusher, ok := public.writer.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
 
 func (public publicResponseWriter) Header() http.Header            { return public.writer.Header() }
 func (public publicResponseWriter) Write(data []byte) (int, error) { return public.writer.Write(data) }
 func (public publicResponseWriter) WriteHeader(status int)         { public.writer.WriteHeader(status) }
 
 // checkRoute panics unless pattern is an uppercase method from routeMethods,
-// one space, and a path with no host, and handler is set. It returns the
+// one space, and a path with no host outside AppKit's /auth/, and handler is
+// set. It returns the
 // method and path.
 func checkRoute(kind, pattern string, handler http.Handler) (method, path string) {
 	method, path, found := strings.Cut(pattern, " ")
@@ -175,6 +199,9 @@ func checkRoute(kind, pattern string, handler http.Handler) (method, path string
 	}
 	if !strings.HasPrefix(path, "/") {
 		panic(fmt.Sprintf("identity: router.%s(%q): a pattern's path starts with \"/\" after one space and names no host, because a host-qualified pattern beats every other", kind, pattern))
+	}
+	if path == "/auth" || strings.HasPrefix(path, "/auth/") {
+		panic(fmt.Sprintf("identity: router.%s(%q): /auth/ belongs to AppKit; mount the route elsewhere", kind, pattern))
 	}
 	if handler == nil {
 		panic(fmt.Sprintf("identity: router.%s(%q): the handler is nil; pass the route's handler", kind, pattern))
