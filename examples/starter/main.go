@@ -152,8 +152,7 @@ func recordProfile(profiles *userprofiles.System) func(*http.Request, identity.I
 }
 
 // routes mounts every route on the router, each line naming its kind and,
-// for a guarded kind, its permission. The frontend is the one public subtree,
-// mounted last.
+// for a guarded kind, its permission. The frontend is the one public subtree.
 func routes(sessions *identity.Sessions, pages http.Handler) http.Handler {
 	router := sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit})
 	router.Public(httpapi.HealthPattern, httpapi.Health(), identity.PublicOptions{Probe: true})

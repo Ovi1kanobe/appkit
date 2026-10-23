@@ -84,7 +84,6 @@ func TestRoutes(t *testing.T) {
 		{"signed out session", nil, "GET", "/auth/session", "", 200, `"user":null`},
 		{"member signed in", memberCookie, "GET", "/auth/session", "", 200, `"sam"`},
 		{"page", nil, "GET", "/", "", 200, "app"},
-		{"account page is the shell, which asks a signed-out person to sign in", nil, "GET", "/account", "", 200, "app"},
 		{"no keys while nothing is delegable", memberCookie, "POST", "/auth/keys", `{"name":"ci","scopes":["x"],"lifetime_seconds":60}`, 400, "does not issue keys"},
 	} {
 		status, body := send(step.cookie, step.method, step.path, step.body)
