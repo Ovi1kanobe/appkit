@@ -142,7 +142,8 @@ func (environment *Environment) AppKit(defaults Defaults) AppKit {
 	}
 	clientAddress := environment.Required("CLIENT_ADDRESS", "where a request's client address comes from: remote for the connection's address, when nothing sits in front of the app, or header:<Name>, such as header:X-Forwarded-For, for the header the reverse proxy sets")
 	trustedProxies := environment.Optional("TRUSTED_PROXIES", "", "comma-separated addresses or CIDR ranges of the reverse proxies, such as 127.0.0.1,::1; required when CLIENT_ADDRESS uses header:<Name>")
-	if clientAddress != "" {
+	// Required already reports a blank value, so only a non-blank one is parsed.
+	if strings.TrimSpace(clientAddress) != "" {
 		rule, err := ParseClientAddress(clientAddress, trustedProxies)
 		var invalid *VariableError
 		if errors.As(err, &invalid) {
@@ -188,7 +189,8 @@ var unusableHeaders = []string{"Host", "Authorization", "Proxy-Authorization", "
 //
 // Each address loses its port, IPv4 is unmapped from IPv6, and IPv6 is cut to
 // its /64, since one network is one caller; a value that is not an address is
-// used as is. An error is a *VariableError.
+// used as is, cut to 64 bytes. header:Forwarded is refused, since its RFC 7239
+// format is not parsed. An error is a *VariableError.
 func ParseClientAddress(clientAddress, trustedProxies string) (func(*http.Request) string, error) {
 	clientAddress = strings.TrimSpace(clientAddress)
 	if clientAddress == "remote" {
@@ -199,6 +201,9 @@ func ParseClientAddress(clientAddress, trustedProxies string) (func(*http.Reques
 		return nil, &VariableError{"CLIENT_ADDRESS", fmt.Sprintf("must be remote, for the connection's address when nothing sits in front of the app, or header:<Name>, such as header:X-Forwarded-For, for the header the reverse proxy sets; got %q", clientAddress)}
 	}
 	name = textproto.CanonicalMIMEHeaderKey(name)
+	if name == "Forwarded" {
+		return nil, &VariableError{"CLIENT_ADDRESS", "header:Forwarded is not supported, because its for=...;proto=... format is not parsed; use the header the reverse proxy writes plainly, such as header:X-Forwarded-For"}
+	}
 	for _, unusable := range unusableHeaders {
 		if name == unusable {
 			return nil, &VariableError{"CLIENT_ADDRESS", fmt.Sprintf("header:%s cannot carry a client address; use the header the reverse proxy sets, such as header:X-Forwarded-For", name)}
@@ -251,7 +256,11 @@ func parseTrustedProxies(value string) ([]netip.Prefix, error) {
 				return nil, &VariableError{"TRUSTED_PROXIES", fmt.Sprintf("%q is not an address or CIDR range, such as 127.0.0.1 or 10.0.1.0/24", entry)}
 			}
 			if prefix.Addr().Is4In6() {
-				prefix = netip.PrefixFrom(prefix.Addr().Unmap(), max(0, prefix.Bits()-96))
+				// Shorter than /96 would reach past the mapped range into all of IPv4.
+				if prefix.Bits() < 96 {
+					return nil, &VariableError{"TRUSTED_PROXIES", fmt.Sprintf("%q is an IPv4-mapped range shorter than /96; write the IPv4 range itself, such as 10.0.1.0/24", entry)}
+				}
+				prefix = netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96)
 			}
 			trusted = append(trusted, prefix.Masked())
 			continue
@@ -294,12 +303,21 @@ func parseAddress(value string) (netip.Addr, bool) {
 	return address.Unmap().WithZone(""), true
 }
 
+// maxNonAddressKey caps a key that is not an address, so an odd header entry
+// a proxy passes on cannot make one key arbitrarily large.
+const maxNonAddressKey = 64
+
 // addressKey is the key one caller is counted under: the bare address, or
-// for IPv6 its /64 network; a value that is not an address is used as is.
+// for IPv6 its /64 network; a value that is not an address is used as is,
+// trimmed and cut to maxNonAddressKey bytes.
 func addressKey(value string) string {
 	address, parsed := parseAddress(value)
 	if !parsed {
-		return strings.TrimSpace(value)
+		value = strings.TrimSpace(value)
+		if len(value) > maxNonAddressKey {
+			value = value[:maxNonAddressKey]
+		}
+		return value
 	}
 	if address.Is6() {
 		network, _ := address.Prefix(64)
