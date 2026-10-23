@@ -27,14 +27,15 @@ AppKit supplies independent infrastructure packages, not an application runtime.
 
 - Rauthy 0.37 or later is the sole authentication authority; it issues `at+jwt` access tokens, and the OIDC subject is the canonical ID.
 - `authz` maps groups to roles and unions their permissions; unmapped groups confer nothing.
-- `identity.RequirePermission` checks coarse permissions only; resource-level rules belong to applications.
+- Every route is mounted through `Sessions.Router` as private, service, or public; a guarded route names a permission, and a public route takes no credentials and reads no identity.
+- A route's permission check is coarse; resource-level rules belong to applications.
 - Session-specific back-channel notices end that session; subject-only notices end all of the subject's sessions; durable logout records reject racing callbacks.
 - Expiry and revocation cancel request contexts; `realtime` closes those connections and `/auth/events` notifies pages.
 - A personal key gets only its scopes, only where delegable, only while the holder's groups grant them; a key manages no keys, and Rauthy logouts never end keys.
 - The session database is exclusively locked for its lifetime; its schema is versioned, migrates forward, and an older AppKit refuses a newer one.
 - `realtime.Hub` is a local connection registry with no hidden workers, queues, durability, or cross-process delivery.
 - `frontend` never applies the SPA fallback to backend namespaces; missing assets return 404.
-- No router, CORS policy, or frontend toolchain.
+- AppKit owns how routes are guarded, never which routes exist; no CORS policy beyond a public route's option, and no frontend toolchain.
 
 ## Before submitting
 
