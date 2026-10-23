@@ -29,6 +29,37 @@ func (s *Sessions) routes(mux *http.ServeMux) {
 	mux.Handle("GET /auth/session", s.optional(http.HandlerFunc(s.sessionJSON)))
 	mux.Handle("GET /auth/events", s.optional(http.HandlerFunc(s.events)))
 	s.keyRoutes(mux)
+	// Reserve the rest of /auth/ for every method, so an application pattern
+	// that overlaps it, such as "POST /{collection}/login", conflicts with
+	// these at mount and Go's ServeMux panics, rather than catching an auth path.
+	for _, method := range routeMethods {
+		mux.Handle(method+" /auth/", s.boundary(reservedAuth(mux, method)))
+	}
+}
+
+// reservedAuth answers a request under /auth/ that no AppKit route serves
+// with this method: 405 with Allow when another method serves the path, as
+// Go's ServeMux would without the reservation, otherwise 404.
+func reservedAuth(mux *http.ServeMux, reservedMethod string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var allowed []string
+		for _, method := range routeMethods {
+			probe := r.Clone(r.Context())
+			probe.Method = method
+			if _, pattern := mux.Handler(probe); method != reservedMethod && pattern != "" && pattern != method+" /auth/" {
+				allowed = append(allowed, method)
+				if method == http.MethodGet {
+					allowed = append(allowed, http.MethodHead)
+				}
+			}
+		}
+		if len(allowed) == 0 {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Allow", strings.Join(allowed, ", "))
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	})
 }
 
 // bearer authenticates a route with a Rauthy access token and attaches the

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -200,7 +201,8 @@ func checkRoute(kind, pattern string, handler http.Handler) (method, path string
 	if !strings.HasPrefix(path, "/") {
 		panic(fmt.Sprintf("identity: router.%s(%q): a pattern's path starts with \"/\" after one space and names no host, because a host-qualified pattern beats every other", kind, pattern))
 	}
-	if path == "/auth" || strings.HasPrefix(path, "/auth/") {
+	// Go unescapes a pattern's segments, so "/%61uth/" is /auth/ too.
+	if unescaped, err := url.PathUnescape(path); err == nil && (unescaped == "/auth" || strings.HasPrefix(unescaped, "/auth/")) {
 		panic(fmt.Sprintf("identity: router.%s(%q): /auth/ belongs to AppKit; mount the route elsewhere", kind, pattern))
 	}
 	if handler == nil {
