@@ -62,6 +62,9 @@ func TestRouter(t *testing.T) {
 		{func() { router.Private("GET /auth/me", "diagnostics.read", ok) }, `identity: router.Private("GET /auth/me"): /auth/ belongs to AppKit; mount the route elsewhere`},
 		{func() { router.Service("POST /auth", "diagnostics.read", ok) }, `identity: router.Service("POST /auth"): /auth/ belongs to AppKit`},
 		{func() { router.Public("GET /auth/", ok) }, `identity: router.Public("GET /auth/"): /auth/ belongs to AppKit`},
+		{func() { router.Private("POST /%61uth/login", "diagnostics.read", ok) }, `identity: router.Private("POST /%61uth/login"): /auth/ belongs to AppKit`},
+		// A wildcard that overlaps /auth/ conflicts with AppKit's reservation, and Go's ServeMux refuses it.
+		{func() { router.Private("POST /{collection}/login", "diagnostics.read", ok) }, `conflicts with pattern "POST /auth/"`},
 		{func() { sessions.Router(identity.RouterConfig{}) }, `identity: Sessions.Router needs a BodyLimit above zero; pass one such as api.DefaultBodyLimit`},
 		{func() { sessions.Router(identity.RouterConfig{BodyLimit: -1}) }, `identity: Sessions.Router needs a BodyLimit above zero`},
 		{func() { sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit}) }, `identity: Sessions.Router called twice; mount every route on the one router`},
@@ -141,7 +144,9 @@ func TestRouter(t *testing.T) {
 	}{
 		{"mux 404 carries the fixed headers", "GET", "/nothing", "", nil, nil, "", 404, "", fixed},
 		{"mux 405 carries the fixed headers", "POST", "/public/echo", "", nil, nil, "", 405, "", fixed},
-		{"auth route keeps its method", "POST", "/auth/login", "", nil, nil, "", 405, "", fixed},
+		{"auth route keeps its method", "POST", "/auth/login", "", nil, nil, "", 405, "", map[string]string{"Allow": "GET, HEAD", "Cache-Control": "no-store"}},
+		{"auth route keeps a post-only method", "GET", "/auth/logout", "", nil, nil, "", 405, "", map[string]string{"Allow": "POST"}},
+		{"no auth route there", "POST", "/auth/nothing", "", nil, nil, "", 404, "", fixed},
 		{"public strips every credential", "GET", "/public/echo", "", cookie, map[string]string{"Authorization": "Basic Zm9vOmJhcg==", "Proxy-Authorization": "Basic Zm9vOmJhcg=="}, "", 200, `{"authorization":"","cookie":"","flush":true,"hijack":false,"proxy_authorization":"","user":""}`, fixed},
 		{"public refuses a bearer credential", "GET", "/public/echo", "", nil, map[string]string{"Authorization": "Bearer " + key}, "", 400, `{"error":"This route is public and takes no credentials; check the path."}`, nil},
 		{"public refuses an upgrade", "GET", "/public/echo", "", nil, map[string]string{"Connection": "Upgrade", "Upgrade": "websocket"}, "", 400, `"error"`, nil},
