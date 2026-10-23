@@ -91,7 +91,7 @@ server := &http.Server{Handler: router /* and timeouts */}
 
 AppKit owns how routes are guarded, never which routes exist: the app's `routes` function mounts each one on the router, choosing its kind on its line.
 A pattern is a method from `GET`, `POST`, `PUT`, `PATCH`, and `DELETE`, one space, and a path with no host; a `GET` route also answers `HEAD`.
-Paths under `/auth/` belong to AppKit, so the router refuses them.
+Paths under `/auth/` belong to AppKit: the router refuses them, and Go refuses at mount a wildcard pattern that would overlap them.
 A mount that breaks a rule, or a second `Sessions.Router` call, panics at startup with a message naming the line.
 A route that differs signed in and signed out is two routes on two paths.
 
@@ -117,7 +117,7 @@ Sign-out is `<form method="post" action="/auth/logout"><button>Sign out</button>
 An optional `next` parameter selects a local return path.
 There is no automatic sign-in.
 
-AppKit owns `GET /auth/login`, `GET /auth/callback`, `POST /auth/logout`, `POST /auth/backchannel`, `GET /auth/session`, `GET /auth/events`, `/auth/keys`, and `/auth/users/{subject}/keys`; a POST to a GET-only one answers 405.
+AppKit owns `GET /auth/login`, `GET /auth/callback`, `POST /auth/logout`, `POST /auth/backchannel`, `GET /auth/session`, `GET /auth/events`, `/auth/keys`, and `/auth/users/{subject}/keys`; another method on one of them answers 405.
 The session endpoint returns `{ "user": null, "permissions": [] }` when signed out, otherwise the identity and permissions resolved through the application's policy, and `keys` with what the person may give a key (see Personal keys).
 `SessionConfig.OnSessionRequest`, when set, runs on each signed-in session request, which every page makes as it loads, so the app can record that the person is here; its result is added to that body as `app`, so pages get display names, preferences, or other per-person state in the same request.
 The event stream emits `signed-out` when the session ends.
