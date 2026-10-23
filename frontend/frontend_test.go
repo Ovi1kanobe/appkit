@@ -58,6 +58,21 @@ func TestFrontend(t *testing.T) {
 			})
 		}
 	}
+	for _, target := range []string{"/", "/bots/123", "/assets/app.js"} {
+		firstResponse := httptest.NewRecorder()
+		handler.ServeHTTP(firstResponse, httptest.NewRequest("GET", target, nil))
+		entityTag := firstResponse.Header().Get("ETag")
+		if entityTag == "" {
+			t.Fatalf("%s sent no ETag", target)
+		}
+		revalidationRequest := httptest.NewRequest("GET", target, nil)
+		revalidationRequest.Header.Set("If-None-Match", entityTag)
+		revalidationResponse := httptest.NewRecorder()
+		handler.ServeHTTP(revalidationResponse, revalidationRequest)
+		if revalidationResponse.Code != http.StatusNotModified || revalidationResponse.Body.Len() != 0 {
+			t.Fatalf("%s revalidation status=%d body=%q", target, revalidationResponse.Code, revalidationResponse.Body.String())
+		}
+	}
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest("POST", "/bots/123", nil))
 	if response.Code != 405 {

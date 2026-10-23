@@ -3,6 +3,8 @@ package frontend
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -52,13 +54,13 @@ func New(files fs.FS) (http.Handler, error) {
 				writer.Header().Set("Content-Type", "application/manifest+json")
 			}
 			// Vite names files under /assets by content hash, so they never change.
-			// Everything else, index.html and root files included, is revalidated.
+			// Everything else, index.html included, is revalidated against its ETag.
 			if first == "assets" {
 				writer.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 			} else {
 				writer.Header().Set("Cache-Control", "no-cache")
 			}
-			http.ServeContent(writer, request, name, time.Time{}, bytes.NewReader(data))
+			serveWithContentETag(writer, request, name, data)
 			return
 		}
 		if !errors.Is(readErr, fs.ErrNotExist) {
@@ -80,6 +82,14 @@ func New(files fs.FS) (http.Handler, error) {
 			http.Error(writer, "frontend unavailable", http.StatusInternalServerError)
 			return
 		}
-		http.ServeContent(writer, request, "index.html", time.Time{}, bytes.NewReader(index))
+		serveWithContentETag(writer, request, "index.html", index)
 	}), nil
+}
+
+// serveWithContentETag sets an ETag from the content hash, since files carry no
+// modification time, so ServeContent can answer a matching If-None-Match with 304.
+func serveWithContentETag(writer http.ResponseWriter, request *http.Request, name string, data []byte) {
+	contentHash := sha256.Sum256(data)
+	writer.Header().Set("ETag", `"`+hex.EncodeToString(contentHash[:16])+`"`)
+	http.ServeContent(writer, request, name, time.Time{}, bytes.NewReader(data))
 }
