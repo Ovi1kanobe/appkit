@@ -74,6 +74,7 @@ api.WriteJSON(writer, http.StatusOK, view)
 The router caps every request body at its `RouterConfig.BodyLimit`, so no handler reads without bound; `api.DefaultBodyLimit` suits JSON, and zero panics rather than meaning a hidden default.
 A route that needs another limit, such as an upload, wraps its handler in `api.LimitBody(limit, handler)` on its line.
 Handlers decode a body with `api.ReadJSON(request, &input)`, which reads one JSON value and nothing after it, and returns the error `api.WriteError` answers with 413 for a body over its limit or 400 for one that is not valid JSON.
+It first requires `Content-Type: application/json`, a charset allowed, and answers 415 with `{"error": "Send JSON with Content-Type: application/json."}` otherwise, so a plain HTML form never reaches a JSON route.
 
 ## Routes and browser sessions
 
@@ -88,6 +89,7 @@ router.Private("GET /api/notes", "notes.read", listNotes)
 router.Private("GET /ws/status", "diagnostics.read", statusSocket)
 router.Service("GET /api/status", "diagnostics.read", status)
 router.Public("GET /api/health", health, identity.PublicOptions{Probe: true})
+router.Public("POST /api/messages", sendMessage, identity.PublicOptions{Origin: identity.SameOrigin, RateLimit: identity.RateLimit{Requests: 5, Per: time.Minute}})
 router.Public("GET /", pages) // the frontend, the one public subtree
 server := &http.Server{Handler: router /* and timeouts */}
 ```
@@ -106,12 +108,25 @@ Both attach the identity with `Permissions` resolved by the configured policy, n
 Resource-level rules in the application use the same `Identity.Can`.
 API and WebSocket errors from AppKit use the same `{"error": "..."}` body as applications.
 
-`Public` is GET only, for anyone, and needs no permission.
-Its handler sees no cookie, authorization, trailer, or URL userinfo, and `identity.FromContext` panics in it, because a public answer is the same for everyone.
+`Public` is for anyone, with any method, and needs no permission.
+Its handler sees no cookie, authorization, trailer, or URL userinfo, and `identity.FromContext` panics in it, because a public answer is independent of any identity.
+A public write records `identity.PublicSubject`, `"public"`, as its actor: the handler builds the system's actor with it, reads a struct of the writable fields only, and leaves validation to the system.
+No signed-in person carries that subject, since a person's is Rauthy's own ID and an empty one counts as no identity, so a rule comparing subjects never matches a public write.
 It may stream with `http.Flusher`, but cannot hijack the connection.
 A request to it with a `Bearer` credential answers 400, since the caller meant another route, and so does a WebSocket upgrade.
-Its options are `PublicOptions{Probe: true}`, which serves any Host and drops credentials silently, for one health path a load balancer reaches by address, `CrossOrigin: true`, which adds `Access-Control-Allow-Origin: *` and exposes `Retry-After`, and `RateLimit`, below.
-Each public route is logged once at mount, with its rate limit, so the log lists them.
+Its options are `PublicOptions{Probe: true}`, which serves any Host and drops credentials silently, for one health path a load balancer reaches by address, `Origin`, `CrossOrigin`, `CrossOriginRequestHeaders`, and `RateLimit`, below.
+Each public route is logged once at mount, with its origin policy, cross-origin headers, and rate limit, so the log lists them.
+
+A write, `POST`, `PUT`, `PATCH`, or `DELETE`, names who may submit it in `Origin`, or panics at mount; `Origin` on a `GET` panics, since it would do nothing.
+`identity.SameOrigin` applies the check private mutations get and answers any other origin 403 with `{"error": "Same-origin request required."}`, for a form on the app's own pages.
+`identity.AnyOrigin` checks no origin, for a page on another site or a client that is no browser.
+`CrossOrigin: true` adds `Access-Control-Allow-Origin: *` to every answer, its 400, 403, 413, 421, and 429 refusals included, and exposes `Retry-After`; no credential is ever allowed across origins.
+`CrossOriginRequestHeaders` lists the request headers a cross-origin page may send, matched case-insensitively, such as `[]string{"Content-Type"}` for JSON; it needs `CrossOrigin`, and a name that is not a header name panics.
+
+The router answers a CORS preflight, an `OPTIONS` request with `Access-Control-Request-Method`, before any route, for the route the requested method reaches.
+It answers 204 only for a public route with `CrossOrigin` whose Host check and origin policy pass and whose list covers every requested header, with `Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods` naming each method whose route at that path qualifies too, `Access-Control-Allow-Headers` naming the requested headers, and `Vary`.
+A malformed preflight answers 400, one for a route that is not cross-origin 403 without the allow header, and one refused by the Host check, origin policy, or header list 421 or 403 with it.
+A preflight never reaches a handler, reads no body, spends no rate limit token, and sends no `Access-Control-Max-Age`; any other `OPTIONS` request goes to the route table as before.
 
 `RateLimit` caps how often one caller may call a route, on any kind: `identity.PublicOptions{RateLimit: identity.RateLimit{Requests: 60, Per: time.Minute}}`, and likewise `PrivateOptions` and `ServiceOptions`, as the last argument.
 A public route counts per client address, and refuses one over the limit before the Host check.
@@ -163,12 +178,12 @@ AppKit owns its schema, opens it with restrictive permissions, and holds an excl
 A second process fails clearly.
 Back up only after shutdown; network filesystems and multiple instances are unsupported.
 
-Unsafe browser requests require the configured Origin or same-origin Fetch Metadata.
+Unsafe browser requests to a private route or a `SameOrigin` public write require the configured Origin or same-origin Fetch Metadata.
 WebSocket upgrades require the exact Origin.
-Plain HTML forms work without custom JavaScript headers.
+Plain HTML forms, such as sign-out, work without custom JavaScript headers, though a route that reads JSON answers them 415.
 Keep GET/HEAD/OPTIONS handlers free of mutations.
 Use HTTPS for the configured public origin and provider endpoints, except on localhost.
-Do not add CORS beyond a public route's option, or log callback query strings/credentials in proxies.
+Do not add CORS beyond a public route's options, or log callback query strings/credentials in proxies.
 
 Back-channel notifications with `sid` end matching sessions only (and match `sub` too when supplied).
 Subject-only notifications end all that user's sessions.
