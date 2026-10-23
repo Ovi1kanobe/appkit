@@ -216,7 +216,7 @@ func TestRoutes(t *testing.T) {
 // the connection's own address, since no proxy sits in front of them.
 func remoteClientAddress(t testing.TB) func(*http.Request) string {
 	t.Helper()
-	clientAddress, err := config.ParseClientAddress("remote")
+	clientAddress, err := config.ParseClientAddress("remote", "")
 	if err != nil {
 		t.Fatal(err)
 	}
