@@ -63,7 +63,7 @@ func TestPreview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &http.Server{Handler: routes(sessions, pages)}
+	server := &http.Server{Handler: routes(sessions, remoteClientAddress(t), pages)}
 	go func() { _ = server.Serve(listener) }()
 	defer server.Close()
 
