@@ -139,6 +139,9 @@ func (router *Router) Public(pattern string, handler http.Handler, options ...Pu
 	if !option.Probe {
 		served = router.sessions.boundary(served)
 	}
+	if option.CrossOrigin {
+		served = allowAnyOrigin(served)
+	}
 	router.mux.Handle(pattern, served)
 }
 
@@ -161,10 +164,16 @@ func servePublic(handler http.Handler, option PublicOptions) http.Handler {
 		public.Header.Del("Proxy-Authorization")
 		public.Trailer = nil
 		public.URL.User = nil // An absolute-form request URL can carry user:password@.
-		if option.CrossOrigin {
-			writer.Header().Set("Access-Control-Allow-Origin", "*")
-		}
 		handler.ServeHTTP(publicResponseWriter{writer: writer}, public)
+	})
+}
+
+// allowAnyOrigin lets a page on any origin read every answer of a
+// cross-origin public route, its 400 and 421 refusals included.
+func allowAnyOrigin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Access-Control-Allow-Origin", "*")
+		next.ServeHTTP(writer, request)
 	})
 }
 
@@ -187,8 +196,7 @@ func (public publicResponseWriter) WriteHeader(status int)         { public.writ
 
 // checkRoute panics unless pattern is an uppercase method from routeMethods,
 // one space, and a path with no host outside AppKit's /auth/, and handler is
-// set. It returns the
-// method and path.
+// set. It returns the method and path.
 func checkRoute(kind, pattern string, handler http.Handler) (method, path string) {
 	method, path, found := strings.Cut(pattern, " ")
 	if !found || !slices.Contains(routeMethods, method) {
