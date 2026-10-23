@@ -27,7 +27,7 @@ AppKit supplies independent infrastructure packages, not an application runtime.
 
 - Rauthy 0.37 or later is the sole authentication authority; it issues `at+jwt` access tokens, and the OIDC subject is the canonical ID.
 - `authz` maps groups to roles and unions their permissions; unmapped groups confer nothing.
-- Every route is mounted through `Sessions.Router` as private, service, or public; a guarded route names a permission, and a public route takes no credentials and reads no identity.
+- Every route is mounted through `Sessions.Router` as private, service, or public, outside AppKit's `/auth/`; a guarded route names a permission, and a public route takes no credentials and reads no identity.
 - A route's permission check is coarse; resource-level rules belong to applications.
 - Session-specific back-channel notices end that session; subject-only notices end all of the subject's sessions; durable logout records reject racing callbacks.
 - Expiry and revocation cancel request contexts; `realtime` closes those connections and `/auth/events` notifies pages.
