@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Ovi1kanobe/appkit/api"
 )
@@ -21,6 +22,7 @@ type Router struct {
 	sessions *Sessions
 	mux      *http.ServeMux
 	handler  http.Handler
+	now      func() time.Time // the clock rate limits read; tests replace it
 }
 
 // RouterConfig configures the router. Every field is required, so what it
@@ -43,6 +45,22 @@ type PublicOptions struct {
 	// Access-Control-Allow-Origin: *. Public routes are GET only and take no
 	// credentials, so no preflight is involved.
 	CrossOrigin bool
+	// RateLimit caps how often one client address may call the route.
+	RateLimit RateLimit
+}
+
+// PrivateOptions changes how Private serves one route. The zero value is
+// the default.
+type PrivateOptions struct {
+	// RateLimit caps how often one client address may call the route.
+	RateLimit RateLimit
+}
+
+// ServiceOptions changes how Service serves one route. The zero value is
+// the default.
+type ServiceOptions struct {
+	// RateLimit caps how often one client address may call the route.
+	RateLimit RateLimit
 }
 
 // routeMethods are the methods a route may name, uppercase as Go's ServeMux
@@ -66,7 +84,7 @@ func (s *Sessions) Router(config RouterConfig) *Router {
 	if routed {
 		panic("identity: Sessions.Router called twice; mount every route on the one router")
 	}
-	router := &Router{sessions: s, mux: http.NewServeMux()}
+	router := &Router{sessions: s, mux: http.NewServeMux(), now: time.Now}
 	router.handler = api.LimitBodies(config.BodyLimit, router.mux)
 	s.routes(router.mux)
 	return router
@@ -94,51 +112,55 @@ func (router *Router) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 // a Bearer header, holding permission. Signed out it answers 401 as JSON,
 // never a redirect; without the permission, 403. A browser's mutations and
 // WebSocket upgrades must come from the app's origin; a key's need not. The
-// request context ends when the session or key does.
-func (router *Router) Private(pattern, permission string, handler http.Handler) {
+// request context ends when the session or key does. A RateLimit in options
+// refuses an address over it before any of that.
+func (router *Router) Private(pattern, permission string, handler http.Handler, options ...PrivateOptions) {
 	checkRoute("Private", pattern, handler)
+	option := oneOption("Private", pattern, "PrivateOptions", options)
 	checkPermission("Private", pattern, permission)
-	router.mux.Handle(pattern, router.sessions.require(requirePermission(permission, handler)))
+	checkRateLimit("Private", pattern, option.RateLimit)
+	router.mux.Handle(pattern, rateLimited(option.RateLimit, router.now, router.sessions.require(requirePermission(permission, handler))))
 }
 
 // Service mounts a route for a caller with a Rauthy access token holding
 // permission: an application's, through the client credentials grant, or a
 // person's. It never accepts a session cookie or a personal key, so it skips
 // the Host check, since a browser never attaches the token by itself.
-// Without a valid token it answers 401; without the permission, 403.
-func (router *Router) Service(pattern, permission string, handler http.Handler) {
+// Without a valid token it answers 401; without the permission, 403. A
+// RateLimit in options refuses an address over it before the token is read.
+func (router *Router) Service(pattern, permission string, handler http.Handler, options ...ServiceOptions) {
 	checkRoute("Service", pattern, handler)
+	option := oneOption("Service", pattern, "ServiceOptions", options)
 	checkPermission("Service", pattern, permission)
-	router.mux.Handle(pattern, router.sessions.bearer(requirePermission(permission, handler)))
+	checkRateLimit("Service", pattern, option.RateLimit)
+	router.mux.Handle(pattern, rateLimited(option.RateLimit, router.now, router.sessions.bearer(requirePermission(permission, handler))))
 }
 
 // Public mounts a GET route anyone may read. The handler sees no cookie,
 // authorization, or trailer, and no identity: FromContext panics in it,
 // because a public answer is the same for everyone. A request with a Bearer
 // credential answers 400, since its caller meant another route, and so does
-// a WebSocket upgrade. The Host check stays unless options say Probe. Each
-// public route is logged once at mount, so the log lists them.
+// a WebSocket upgrade. The Host check stays unless options say Probe. A
+// RateLimit refuses an address over it before the Host check. Each public
+// route is logged once at mount, so the log lists them.
 func (router *Router) Public(pattern string, handler http.Handler, options ...PublicOptions) {
 	method, path := checkRoute("Public", pattern, handler)
-	if len(options) > 1 {
-		panic(fmt.Sprintf("identity: router.Public(%q): pass at most one PublicOptions", pattern))
-	}
+	option := oneOption("Public", pattern, "PublicOptions", options)
 	if method != http.MethodGet {
 		panic(fmt.Sprintf("identity: router.Public(%q): public routes are GET only", pattern))
-	}
-	var option PublicOptions
-	if len(options) == 1 {
-		option = options[0]
 	}
 	subtree := strings.HasSuffix(path, "/") || strings.HasSuffix(path, "...}")
 	if option.Probe && subtree {
 		panic(fmt.Sprintf("identity: router.Public(%q): a probe serves one path, never a subtree; name the path, such as \"GET /api/health\"", pattern))
 	}
-	slog.Info("AppKit public route", "pattern", pattern, "subtree", subtree, "probe", option.Probe, "cross_origin", option.CrossOrigin)
+	checkRateLimit("Public", pattern, option.RateLimit)
+	slog.Info("AppKit public route", "pattern", pattern, "subtree", subtree, "probe", option.Probe, "cross_origin", option.CrossOrigin, "rate_limit", option.RateLimit.label())
 	served := servePublic(handler, option)
 	if !option.Probe {
 		served = router.sessions.boundary(served)
 	}
+	// Inside allowAnyOrigin, so a cross-origin page can read the 429 too.
+	served = rateLimited(option.RateLimit, router.now, served)
 	if option.CrossOrigin {
 		served = allowAnyOrigin(served)
 	}
@@ -217,6 +239,19 @@ func checkRoute(kind, pattern string, handler http.Handler) (method, path string
 		panic(fmt.Sprintf("identity: router.%s(%q): the handler is nil; pass the route's handler", kind, pattern))
 	}
 	return method, path
+}
+
+// oneOption returns a mount's options value, or the zero value when none is
+// passed, and panics when more than one is.
+func oneOption[Options any](kind, pattern, typeName string, options []Options) Options {
+	if len(options) > 1 {
+		panic(fmt.Sprintf("identity: router.%s(%q): pass at most one %s", kind, pattern, typeName))
+	}
+	var option Options
+	if len(options) == 1 {
+		option = options[0]
+	}
+	return option
 }
 
 // checkPermission panics when a guarded route names no permission.

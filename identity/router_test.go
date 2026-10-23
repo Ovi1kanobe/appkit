@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Ovi1kanobe/appkit/api"
 	"github.com/Ovi1kanobe/appkit/authz"
@@ -37,6 +38,9 @@ func TestRouter(t *testing.T) {
 	const bodyLimit = 64 << 10
 	router := sessions.Router(identity.RouterConfig{BodyLimit: bodyLimit})
 	app.Config.Handler = router
+	// Rate limits read this clock, so the refill case advances it instead of sleeping.
+	clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	identity.SetRouterClock(router, func() time.Time { return clock })
 
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) })
 	for _, test := range []struct {
@@ -57,6 +61,24 @@ func TestRouter(t *testing.T) {
 		{func() { router.Public("GET /api/catalogue", nil) }, `identity: router.Public("GET /api/catalogue"): the handler is nil`},
 		{func() { router.Public("POST /api/posts", ok) }, `identity: router.Public("POST /api/posts"): public routes are GET only`},
 		{func() { router.Public("GET /api/catalogue", ok, identity.PublicOptions{}, identity.PublicOptions{}) }, `identity: router.Public("GET /api/catalogue"): pass at most one PublicOptions`},
+		{func() {
+			router.Private("GET /api/notes", "diagnostics.read", ok, identity.PrivateOptions{}, identity.PrivateOptions{})
+		}, `identity: router.Private("GET /api/notes"): pass at most one PrivateOptions`},
+		{func() {
+			router.Service("GET /api/status", "diagnostics.read", ok, identity.ServiceOptions{}, identity.ServiceOptions{})
+		}, `identity: router.Service("GET /api/status"): pass at most one ServiceOptions`},
+		{func() {
+			router.Public("GET /api/catalogue", ok, identity.PublicOptions{RateLimit: identity.RateLimit{Requests: 60}})
+		}, `identity: router.Public("GET /api/catalogue"): a RateLimit needs both Requests and Per above zero, such as identity.RateLimit{Requests: 60, Per: time.Minute}, or neither for no limit`},
+		{func() {
+			router.Private("GET /api/notes", "diagnostics.read", ok, identity.PrivateOptions{RateLimit: identity.RateLimit{Per: time.Minute}})
+		}, `identity: router.Private("GET /api/notes"): a RateLimit needs both Requests and Per above zero`},
+		{func() {
+			router.Service("GET /api/status", "diagnostics.read", ok, identity.ServiceOptions{RateLimit: identity.RateLimit{Requests: -1, Per: time.Minute}})
+		}, `identity: router.Service("GET /api/status"): a RateLimit needs both Requests and Per above zero`},
+		{func() {
+			router.Public("GET /api/catalogue", ok, identity.PublicOptions{RateLimit: identity.RateLimit{Requests: 60, Per: -time.Minute}})
+		}, `identity: router.Public("GET /api/catalogue"): a RateLimit needs both Requests and Per above zero`},
 		{func() { router.Public("GET /probes/", ok, identity.PublicOptions{Probe: true}) }, `identity: router.Public("GET /probes/"): a probe serves one path, never a subtree`},
 		{func() { router.Public("GET /probes/{rest...}", ok, identity.PublicOptions{Probe: true}) }, `never a subtree`},
 		{func() { router.Private("GET /auth/me", "diagnostics.read", ok) }, `identity: router.Private("GET /auth/me"): /auth/ belongs to AppKit; mount the route elsewhere`},
@@ -95,9 +117,11 @@ func TestRouter(t *testing.T) {
 	router.Public("GET /public/shared", ok, identity.PublicOptions{CrossOrigin: true})
 	router.Public("GET /files/", ok)
 	router.Public("GET /health", echo, identity.PublicOptions{Probe: true})
+	router.Public("GET /public/limited", ok, identity.PublicOptions{CrossOrigin: true, RateLimit: identity.RateLimit{Requests: 2, Per: time.Minute}})
 	slog.SetDefault(defaultLogger)
 	for _, line := range []string{
-		`"msg":"AppKit public route","pattern":"GET /public/echo","subtree":false,"probe":false,"cross_origin":false`,
+		`"msg":"AppKit public route","pattern":"GET /public/echo","subtree":false,"probe":false,"cross_origin":false,"rate_limit":""`,
+		`"msg":"AppKit public route","pattern":"GET /public/limited","subtree":false,"probe":false,"cross_origin":true,"rate_limit":"2/1m0s"`,
 		`"msg":"AppKit public route","pattern":"GET /public/shared","subtree":false,"probe":false,"cross_origin":true`,
 		`"msg":"AppKit public route","pattern":"GET /files/","subtree":true,"probe":false,"cross_origin":false`,
 		`"msg":"AppKit public route","pattern":"GET /health","subtree":false,"probe":true,"cross_origin":false`,
@@ -106,8 +130,8 @@ func TestRouter(t *testing.T) {
 			t.Fatalf("mount log missing %s in:\n%s", line, mountLog.String())
 		}
 	}
-	if count := strings.Count(mountLog.String(), "AppKit public route"); count != 6 {
-		t.Fatalf("%d public route lines, want 6", count)
+	if count := strings.Count(mountLog.String(), "AppKit public route"); count != 7 {
+		t.Fatalf("%d public route lines, want 7", count)
 	}
 
 	readJSON := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -122,6 +146,8 @@ func TestRouter(t *testing.T) {
 	router.Private("POST /private/body", "diagnostics.read", readJSON)
 	router.Private("POST /private/upload", "diagnostics.read", api.LimitBody(4<<20, readJSON))
 	router.Service("GET /service", "diagnostics.read", ok)
+	router.Private("GET /private/limited", "diagnostics.read", ok, identity.PrivateOptions{RateLimit: identity.RateLimit{Requests: 1, Per: time.Minute}})
+	router.Service("GET /service/limited", "diagnostics.read", ok, identity.ServiceOptions{RateLimit: identity.RateLimit{Requests: 1, Per: time.Minute}})
 
 	alice := identitytest.User{Subject: "alice", Groups: []string{"observers"}}
 	cookie := provider.SignIn(t, app.URL, alice)
@@ -201,6 +227,51 @@ func TestRouter(t *testing.T) {
 			}
 			for name, value := range test.want {
 				if got := response.Header.Get(name); got != value {
+					t.Fatalf("%s: %q, want %q", name, got, value)
+				}
+			}
+		})
+	}
+
+	// Rate limits, in order against one clock: each address has its own bucket,
+	// a refused request costs a token before any authentication, and Per refills.
+	tooMany := `{"error":"Too many requests; try again later."}`
+	for _, test := range []struct {
+		name     string
+		path     string
+		headers  map[string]string
+		advance  time.Duration // moves the clock before the request
+		status   int
+		contains string
+		want     map[string]string // response headers; an empty value means absent
+	}{
+		{"under the limit served", "/public/limited", map[string]string{"X-Forwarded-For": "203.0.113.7"}, 0, 200, "ok", map[string]string{"Retry-After": ""}},
+		{"up to the limit served", "/public/limited", map[string]string{"X-Forwarded-For": "203.0.113.7"}, 0, 200, "ok", nil},
+		{"after the limit 429 with Retry-After", "/public/limited", map[string]string{"X-Forwarded-For": "203.0.113.7"}, 0, 429, tooMany, map[string]string{"Retry-After": "30", "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"}},
+		{"a forged earlier forwarded entry changes nothing", "/public/limited", map[string]string{"X-Forwarded-For": "198.51.100.1, 203.0.113.7"}, 0, 429, tooMany, nil},
+		{"a second address is unaffected", "/public/limited", map[string]string{"X-Forwarded-For": "203.0.113.8"}, 0, 200, "ok", nil},
+		{"X-Real-IP without X-Forwarded-For", "/public/limited", map[string]string{"X-Real-IP": "203.0.113.9"}, 0, 200, "ok", nil},
+		{"refilled after Per", "/public/limited", map[string]string{"X-Forwarded-For": "203.0.113.7"}, time.Minute, 200, "ok", nil},
+		{"private spends a token before authentication", "/private/limited", map[string]string{"X-Forwarded-For": "203.0.113.7"}, 0, 401, `{"error":"Sign in required."}`, nil},
+		{"private honours its limit", "/private/limited", map[string]string{"X-Forwarded-For": "203.0.113.7", "Authorization": "Bearer " + key}, 0, 429, tooMany, map[string]string{"Retry-After": "60"}},
+		{"service spends a token before the token check", "/service/limited", map[string]string{"X-Forwarded-For": "203.0.113.7"}, 0, 401, `{"error":"Sign in required."}`, nil},
+		{"service honours its limit", "/service/limited", map[string]string{"X-Forwarded-For": "203.0.113.7", "Authorization": "Bearer " + token}, 0, 429, tooMany, map[string]string{"Retry-After": "60"}},
+		{"RemoteAddr without forwarded headers", "/service/limited", map[string]string{"Authorization": "Bearer " + token}, 0, 200, "ok", nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clock = clock.Add(test.advance)
+			request := httptest.NewRequest("GET", test.path, nil)
+			request.Host = mustHost(t, app.URL)
+			for name, value := range test.headers {
+				request.Header.Set(name, value)
+			}
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			if response.Code != test.status || !strings.Contains(response.Body.String(), test.contains) {
+				t.Fatalf("%d %q, want %d containing %q", response.Code, response.Body.String(), test.status, test.contains)
+			}
+			for name, value := range test.want {
+				if got := response.Header().Get(name); got != value {
 					t.Fatalf("%s: %q, want %q", name, got, value)
 				}
 			}
