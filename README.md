@@ -125,9 +125,9 @@ The zero value means no limit; one field without the other, a negative one, or a
 `remote` is the connection's address, for an app nothing sits in front of, such as one in development on localhost.
 `header:<Name>` is believed only from a connection whose address `TRUSTED_PROXIES` lists; any other connection is keyed by its own address.
 Its comma-separated entries are read from the right, skipping every trusted proxy, and the first other entry is the client, so `header:X-Forwarded-For` behind a chain of trusted proxies takes the address the outermost one saw, and a single-valued header such as `header:CF-Connecting-IP` works the same.
-Headers that cannot carry an address, such as `Host`, `Authorization`, or `Cookie`, fail at startup.
+Headers that cannot carry an address, such as `Host`, `Authorization`, or `Cookie`, fail at startup, and so does `Forwarded`, whose RFC 7239 format is not parsed.
 A request through a trusted proxy without the header is keyed by the proxy, so every such caller shares one bucket, and the first one logs a warning.
-Every address loses its port and IPv4 is unmapped from IPv6; an IPv6 address counts by its /64, since one network is one caller; a value that is not an address is used as is.
+Every address loses its port and IPv4 is unmapped from IPv6; an IPv6 address counts by its /64, since one network is one caller; a value that is not an address is used as is, cut to 64 bytes.
 Limits are per instance and per route, and reset when the app restarts.
 
 Every response, Go's own 404 and 405 included, carries `Cache-Control: no-store`, which a handler may replace, `Referrer-Policy: same-origin`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: frame-ancestors 'none'`, `X-Frame-Options: DENY`, and HSTS on an HTTPS origin.
@@ -252,7 +252,7 @@ An app is one process listening on loopback behind a TLS reverse proxy, with `AP
 - **One instance:** the session database is exclusively locked, so a second process fails to start and every restart is a short outage.
 - **Rauthy at startup:** discovery runs at startup, so the application exits while Rauthy is unreachable; let the service manager restart it.
 - **Host header:** the proxy must pass the original `Host`, or AppKit answers 421; WebSocket upgrades also need the `Upgrade` and `Connection` headers.
-- **Client address:** set `CLIENT_ADDRESS` to the header the proxy sets, such as `header:X-Forwarded-For`, and `TRUSTED_PROXIES` to the proxy's addresses, such as `127.0.0.1,::1`; an existing app adds both on upgrade, since startup fails without them.
+- **Client address:** set `CLIENT_ADDRESS` to the header the proxy sets, such as `header:X-Forwarded-For`, and `TRUSTED_PROXIES` to the proxy's addresses, such as `127.0.0.1,::1`; an existing app adds `CLIENT_ADDRESS` on upgrade, since startup fails without it, and `TRUSTED_PROXIES` too when it uses the header form.
 - **Event stream:** `/auth/events` is a long-lived response; disable proxy buffering for it (AppKit sends `X-Accel-Buffering: no`).
 - **Logs:** never log query strings for `/auth/callback`, because they contain one-time authorization codes.
 - **Secrets:** `RAUTHY_CLIENT_SECRET` and `APP_MASTER_KEY` are read from the environment and belong in a protected environment file, never in the repository.
