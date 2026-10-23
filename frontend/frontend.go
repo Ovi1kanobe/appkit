@@ -51,6 +51,13 @@ func New(files fs.FS) (http.Handler, error) {
 			if path.Ext(name) == ".webmanifest" {
 				writer.Header().Set("Content-Type", "application/manifest+json")
 			}
+			// Vite names files under /assets by content hash, so they never change.
+			// Everything else, index.html and root files included, is revalidated.
+			if first == "assets" {
+				writer.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			} else {
+				writer.Header().Set("Cache-Control", "no-cache")
+			}
 			http.ServeContent(writer, request, name, time.Time{}, bytes.NewReader(data))
 			return
 		}
