@@ -23,9 +23,11 @@ type Router struct {
 	mux      *http.ServeMux
 	handler  http.Handler
 	// clientAddress keys public rate limits; now is the clock rate limits
-	// read, which tests replace.
+	// read and rateLimitKeys how many callers each tracks, which tests
+	// replace.
 	clientAddress func(*http.Request) string
 	now           func() time.Time
+	rateLimitKeys int
 }
 
 // RouterConfig configures the router. Every field is required, so what it
@@ -95,7 +97,7 @@ func (s *Sessions) Router(config RouterConfig) *Router {
 	if routed {
 		panic("identity: Sessions.Router called twice; mount every route on the one router")
 	}
-	router := &Router{sessions: s, mux: http.NewServeMux(), clientAddress: config.ClientAddress, now: time.Now}
+	router := &Router{sessions: s, mux: http.NewServeMux(), clientAddress: config.ClientAddress, now: time.Now, rateLimitKeys: rateLimitKeys}
 	router.handler = api.LimitBodies(config.BodyLimit, router.mux)
 	s.routes(router.mux)
 	return router
@@ -131,7 +133,7 @@ func (router *Router) Private(pattern, permission string, handler http.Handler, 
 	option := oneOption("Private", pattern, "PrivateOptions", options)
 	checkPermission("Private", pattern, permission)
 	checkRateLimit("Private", pattern, option.RateLimit)
-	router.mux.Handle(pattern, router.sessions.require(rateLimited(option.RateLimit, router.now, subjectKey, requirePermission(permission, handler))))
+	router.mux.Handle(pattern, router.sessions.require(router.rateLimited(option.RateLimit, subjectKey, requirePermission(permission, handler))))
 }
 
 // Service mounts a route for a caller with a Rauthy access token holding
@@ -146,7 +148,7 @@ func (router *Router) Service(pattern, permission string, handler http.Handler, 
 	option := oneOption("Service", pattern, "ServiceOptions", options)
 	checkPermission("Service", pattern, permission)
 	checkRateLimit("Service", pattern, option.RateLimit)
-	router.mux.Handle(pattern, router.sessions.bearer(rateLimited(option.RateLimit, router.now, subjectKey, requirePermission(permission, handler))))
+	router.mux.Handle(pattern, router.sessions.bearer(router.rateLimited(option.RateLimit, subjectKey, requirePermission(permission, handler))))
 }
 
 // Public mounts a GET route anyone may read. The handler sees no cookie,
@@ -174,7 +176,7 @@ func (router *Router) Public(pattern string, handler http.Handler, options ...Pu
 		served = router.sessions.boundary(served)
 	}
 	// Inside allowAnyOrigin, so a cross-origin page can read the 429 too.
-	served = rateLimited(option.RateLimit, router.now, router.clientAddress, served)
+	served = router.rateLimited(option.RateLimit, router.clientAddress, served)
 	if option.CrossOrigin {
 		served = allowAnyOrigin(served)
 	}
@@ -205,10 +207,12 @@ func servePublic(handler http.Handler, option PublicOptions) http.Handler {
 }
 
 // allowAnyOrigin lets a page on any origin read every answer of a
-// cross-origin public route, its 400 and 421 refusals included.
+// cross-origin public route, its 400, 421, and 429 refusals included, and the
+// Retry-After header of a 429.
 func allowAnyOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Access-Control-Allow-Origin", "*")
+		writer.Header().Set("Access-Control-Expose-Headers", "Retry-After")
 		next.ServeHTTP(writer, request)
 	})
 }

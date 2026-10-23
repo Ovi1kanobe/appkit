@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"container/list"
 	"fmt"
 	"math"
 	"net/http"
@@ -21,9 +22,10 @@ type RateLimit struct {
 	Per      time.Duration
 }
 
-// rateLimitSweepAt is the number of keys at which an insert sweeps idle
-// ones even when no timed sweep is due.
-const rateLimitSweepAt = 4096
+// rateLimitKeys is how many callers one route's rate limit tracks at most.
+// When it is full, the caller seen least recently is dropped, so a flood of
+// new addresses costs bounded memory and never refuses a new caller.
+const rateLimitKeys = 100_000
 
 // checkRateLimit panics unless limit is the zero value or has both fields
 // above zero.
@@ -45,11 +47,11 @@ func (limit RateLimit) label() string {
 // rateLimited wraps next in limit's token buckets, one per key that key
 // returns for a request, or returns next unchanged for no limit. A request
 // over the limit answers 429 with Retry-After and reaches nothing further.
-func rateLimited(limit RateLimit, now func() time.Time, key func(*http.Request) string, next http.Handler) http.Handler {
+func (router *Router) rateLimited(limit RateLimit, key func(*http.Request) string, next http.Handler) http.Handler {
 	if limit == (RateLimit{}) {
 		return next
 	}
-	limiter := &rateLimiter{limit: limit, now: now, buckets: map[string]*rateBucket{}, sweepAt: rateLimitSweepAt}
+	limiter := &rateLimiter{limit: limit, now: router.now, maxKeys: router.rateLimitKeys, buckets: map[string]*list.Element{}, recent: list.New()}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if wait, allowed := limiter.allow(key(request)); !allowed {
 			writer.Header().Set("Retry-After", strconv.Itoa(max(1, int(math.Ceil(wait.Seconds())))))
@@ -60,20 +62,24 @@ func rateLimited(limit RateLimit, now func() time.Time, key func(*http.Request) 
 	})
 }
 
-// rateLimiter holds one route's token buckets, one per key, in memory. A key
-// idle for Per has a full bucket, the same as none, so a sweep drops it; sweeps run on insert, when one is due or the map is large,
-// so the map stays bounded without a background goroutine.
+// rateLimiter holds one route's token buckets, one per key, in memory, at
+// most maxKeys of them. recent orders the buckets from the most recently used
+// at the front to the least at the back. A key idle for Per has a full bucket,
+// the same as none, so each insert first drops idle keys from the back, then
+// the least recently used one when the table is still full. Both are O(1) per
+// key dropped, with no background goroutine.
 type rateLimiter struct {
-	limit     RateLimit
-	now       func() time.Time
-	mu        sync.Mutex
-	buckets   map[string]*rateBucket
-	nextSweep time.Time
-	sweepAt   int
+	limit   RateLimit
+	now     func() time.Time
+	maxKeys int
+	mu      sync.Mutex
+	buckets map[string]*list.Element // each holds a *rateBucket
+	recent  *list.List
 }
 
-// rateBucket is one key's tokens as of updated.
+// rateBucket is one key's tokens as of updated, the last time it was used.
 type rateBucket struct {
+	key     string
 	tokens  float64
 	updated time.Time
 }
@@ -85,12 +91,15 @@ func (limiter *rateLimiter) allow(key string) (wait time.Duration, allowed bool)
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
 	now := limiter.now()
-	bucket, found := limiter.buckets[key]
-	if !found {
-		limiter.sweep(now)
-		bucket = &rateBucket{tokens: capacity, updated: now}
-		limiter.buckets[key] = bucket
+	element, found := limiter.buckets[key]
+	if found {
+		limiter.recent.MoveToFront(element)
+	} else {
+		limiter.evict(now)
+		element = limiter.recent.PushFront(&rateBucket{key: key, tokens: capacity, updated: now})
+		limiter.buckets[key] = element
 	}
+	bucket := element.Value.(*rateBucket)
 	// A full Per refills exactly, so no rounding leaves a refilled bucket short.
 	elapsed := now.Sub(bucket.updated)
 	switch {
@@ -109,20 +118,18 @@ func (limiter *rateLimiter) allow(key string) (wait time.Duration, allowed bool)
 	return time.Duration((1 - bucket.tokens) * float64(limiter.limit.Per) / capacity), false
 }
 
-// sweep drops every key idle for Per when a sweep is due or the map has
-// reached sweepAt. A sweep that leaves the map large raises sweepAt to twice
-// its size, so a map of live keys is not swept on every insert.
-func (limiter *rateLimiter) sweep(now time.Time) {
-	if now.Before(limiter.nextSweep) && len(limiter.buckets) < limiter.sweepAt {
-		return
-	}
-	for key, bucket := range limiter.buckets {
-		if now.Sub(bucket.updated) >= limiter.limit.Per {
-			delete(limiter.buckets, key)
+// evict makes room for one more key: it drops every key idle for Per from
+// the back of recent, then, while the table is still full, the least recently
+// used key.
+func (limiter *rateLimiter) evict(now time.Time) {
+	for back := limiter.recent.Back(); back != nil; back = limiter.recent.Back() {
+		bucket := back.Value.(*rateBucket)
+		if now.Sub(bucket.updated) < limiter.limit.Per && len(limiter.buckets) < limiter.maxKeys {
+			return
 		}
+		limiter.recent.Remove(back)
+		delete(limiter.buckets, bucket.key)
 	}
-	limiter.nextSweep = now.Add(limiter.limit.Per)
-	limiter.sweepAt = max(rateLimitSweepAt, 2*len(limiter.buckets))
 }
 
 // subjectKey keys a private or service route's buckets by the identity that
