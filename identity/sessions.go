@@ -46,9 +46,9 @@ type SessionConfig struct {
 }
 
 // Sessions owns browser authentication, personal keys, and its SQLite
-// connection. Call Close on shutdown. Use Verifier separately for bearer
-// routes: Require and Optional accept a session cookie or a key, Bearer a
-// Rauthy access token, and each refuses the other credentials.
+// connection. Call Close on shutdown. Its Router mounts every route: private
+// routes accept a session cookie or a key, service routes a Rauthy access
+// token, and each refuses the other credentials.
 type Sessions struct {
 	config     SessionConfig
 	verifier   *Verifier
@@ -58,6 +58,7 @@ type Sessions struct {
 	cookieName string
 	mu         sync.Mutex // Serializes persistence, callback admission, and live request registration.
 	closed     bool
+	routed     bool // Router was called; a second call panics.
 	flows      map[string]loginFlow
 	watches    map[string]map[*sessionWatch]struct{}
 	keyStamps  map[string]keyStamp

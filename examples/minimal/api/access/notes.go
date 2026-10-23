@@ -3,6 +3,8 @@
 package access
 
 import (
+	"time"
+
 	"github.com/Ovi1kanobe/appkit/api"
 
 	"github.com/Ovi1kanobe/appkit/examples/minimal/systems/notes"
@@ -30,6 +32,21 @@ type Note struct {
 // Everyone who reads notes sees every note.
 func ViewNote(viewer identity.Identity, note notes.Note, author userprofiles.UserProfile) (Note, bool) {
 	return Note{Note: note, AuthorEmail: author.Email, Mine: note.CreatedBy == viewer.Subject}, true
+}
+
+// PublicNote is what anyone sees of a note, signed in or not: its text and
+// when it was written, never who wrote it. Each field is listed here, so a
+// field added to notes.Note is never public by accident.
+type PublicNote struct {
+	ID        int64     `json:"id"`
+	Text      string    `json:"text"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ViewPublicNote returns what anyone sees of note. Every note is public today;
+// false would leave it out of a list and answer not found for one note.
+func ViewPublicNote(note notes.Note) (PublicNote, bool) {
+	return PublicNote{ID: note.ID, Text: note.Text, CreatedAt: note.CreatedAt}, true
 }
 
 // CanDeleteNote reports whether viewer may delete note: only its author may.

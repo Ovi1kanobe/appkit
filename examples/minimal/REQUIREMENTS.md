@@ -21,7 +21,7 @@ A member opens Notes, adds a short note, and sees it in the shared list with eve
 
 ### 2. Watch the process (P2)
 A member opens the Dashboard and sees how long the process has been running, updating live.
-- Why this priority: it shows a system without tables and a bearer route for another app.
+- Why this priority: it shows a system without tables and a service route for another app.
 - Independent test: open the Dashboard and watch the uptime advance; call `/api/status` with a client token.
 - Acceptance scenarios:
     1. Given a signed-in member, when they open the Dashboard, then the uptime shows and keeps advancing without a refresh.
@@ -102,8 +102,14 @@ An admin enters the email provider's API key once on Settings and sees that it i
 ## Other apps
 - Called by a monitoring app, client `monitor`, for the process status at `/api/status`.
 
+## Public routes
+| Route | Fields | Who calls it and why |
+| --- | --- | --- |
+| `GET /api/notes/public` | `id`, `text`, `created_at` | An office wall display, which shows the latest notes without anyone signing in |
+
 ## Decisions
-- Status is also served to bearer clients at `/api/status`, instead of a separate monitoring app, because the example must show a bearer route.
+- Status is also served to calling apps at `/api/status`, instead of a separate monitoring app, because the example must show a service route.
+- Notes are also served signed out at `/api/notes/public`, because the example must show a public data route.
 
 ## Out of scope
 - Sending email.

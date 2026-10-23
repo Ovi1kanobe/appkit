@@ -5,13 +5,15 @@ import (
 	"net/http"
 )
 
-// DefaultBodyLimit is the request body size LimitBodies allows on a route with
-// no limit of its own: plenty for a JSON body.
+// DefaultBodyLimit is a request body limit with plenty of room for a JSON
+// body, for identity.RouterConfig.BodyLimit or LimitBodies.
 const DefaultBodyLimit = 1 << 20
 
 // LimitBodies caps every request body at limit bytes, so no handler can be
-// made to read without bound. Wrap the mux once. A handler that reads past the
-// limit gets an *http.MaxBytesError, which WriteError answers with 413.
+// made to read without bound. identity's Router applies it once around every
+// route; a server without one wraps its whole handler once. A handler that
+// reads past the limit gets an *http.MaxBytesError, which WriteError answers
+// with 413.
 func LimitBodies(limit int64, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Body != nil && request.Body != http.NoBody {

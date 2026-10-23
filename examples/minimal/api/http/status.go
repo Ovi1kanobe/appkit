@@ -12,7 +12,9 @@ import (
 
 const StatusPattern = "GET /api/status"
 
-// Status serves a diagnostics snapshot to bearer clients. Mount it behind access.DiagnosticsRead.
+// Status serves a diagnostics snapshot to a calling application or a person
+// with a Rauthy access token. Mount it as a service route behind
+// access.DiagnosticsRead.
 func Status(system *diagnostics.System) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		view, _ := access.ViewStatus(viewer(request), system.Snapshot())

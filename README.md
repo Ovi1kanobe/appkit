@@ -9,7 +9,7 @@ Requires Go 1.26 or newer.
 | Package | Owns |
 | --- | --- |
 | `api` | JSON responses, and system errors declared with the status they mean, so handlers never map errors |
-| `identity` | OIDC discovery, cached JWKS verification, bearer authentication, browser sessions, context identity, back-channel logout, service calls between applications |
+| `identity` | OIDC discovery, cached JWKS verification, the router that guards every route, browser sessions, context identity, back-channel logout, service calls between applications |
 | `authz` | External group, and calling application, to application role to permission mapping |
 | `realtime` | Authenticated WebSocket connections, subscriptions, safe writes, a coalescing publisher, cleanup |
 | `frontend` | Embedded asset serving and conservative SPA fallback |
@@ -68,16 +68,11 @@ api.WriteJSON(writer, http.StatusOK, view)
 
 ## Request bodies
 
-Wrap the mux once, at the end of the application's `routes`, so every route has a body limit and no handler reads without bound:
-
-```go
-return api.LimitBodies(api.DefaultBodyLimit, mux)
-```
-
-A route that needs another limit, such as an upload, puts `api.LimitBody(limit, handler)` anywhere on its line.
+The router caps every request body at its `RouterConfig.BodyLimit`, so no handler reads without bound; `api.DefaultBodyLimit` suits JSON, and zero panics rather than meaning a hidden default.
+A route that needs another limit, such as an upload, wraps its handler in `api.LimitBody(limit, handler)` on its line.
 Handlers decode a body with `api.ReadJSON(request, &input)`, which reads one JSON value and nothing after it, and returns the error `api.WriteError` answers with 413 for a body over its limit or 400 for one that is not valid JSON.
 
-## Browser sessions
+## Routes and browser sessions
 
 ```go
 sessionConfig := appKit.Sessions
@@ -85,26 +80,44 @@ sessionConfig.Policy = policy // application-owned authz rules
 sessions, err := identity.NewSessions(ctx, sessionConfig)
 // Handle err at startup.
 defer sessions.Close()
-sessions.Routes(mux)
-mux.Handle("GET /{$}", sessions.Optional(home))
-mux.Handle("GET /dashboard", sessions.Require(dashboard))
-mux.Handle("GET /ws/status", sessions.Require(identity.RequirePermission("diagnostics.read", socketHandler)))
-mux.Handle("GET /api/status", sessions.Bearer(identity.RequirePermission("diagnostics.read", apiHandler)))
+router := sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit}) // AppKit's /auth/ routes are already on it
+router.Private("GET /api/notes", "notes.read", listNotes)
+router.Private("GET /ws/status", "diagnostics.read", statusSocket)
+router.Service("GET /api/status", "diagnostics.read", status)
+router.Public("GET /api/health", health, identity.PublicOptions{Probe: true})
+router.Public("GET /", pages) // the frontend, the one public subtree
+server := &http.Server{Handler: router /* and timeouts */}
 ```
 
-`Require` redirects signed-out HTML navigation to Rauthy and returns 401 for API/WebSocket requests.
+AppKit owns how routes are guarded, never which routes exist: the app's `routes` function mounts each one on the router, choosing its kind on its line.
+A pattern is a method from `GET`, `POST`, `PUT`, `PATCH`, and `DELETE`, one space, and a path with no host; a `GET` route also answers `HEAD`.
+Paths under `/auth/` belong to AppKit: the router refuses them, and Go refuses at mount a wildcard pattern that would overlap them.
+A mount that breaks a rule, or a second `Sessions.Router` call, panics at startup with a message naming the line.
+A route that differs signed in and signed out is two routes on two paths.
+
+`Private` is for people: a session cookie, or a personal key in a `Bearer` header, holding the permission.
+Signed out it answers 401, never a redirect, since the single-page app sends a signed-out person to sign in; without the permission it answers 403.
+`Service` is for a Rauthy access token holding the permission, an application's (see Service calls) or a person's; it never accepts a session cookie or a key, and skips the Host check, since a browser never attaches the token by itself.
+Both attach the identity with `Permissions` resolved by the configured policy, never stored: from its groups for a person, and from the policy's client list for a calling application.
+Resource-level rules in the application use the same `Identity.Can`.
 API and WebSocket errors from AppKit use the same `{"error": "..."}` body as applications.
-`Require`, `Optional`, and `Bearer` attach the identity with `Permissions` resolved by the configured policy, never stored: from its groups for a person, and from the policy's client list for a calling application (see Service calls).
-`identity.RequirePermission` answers 401 without an identity and 403 when `Identity.Can` is false; resource-level rules in the application use the same `Can`.
-`Require` and `Optional` accept a session cookie or a personal key in a `Bearer` header; `Bearer` accepts a Rauthy access token; each refuses the other credentials, and a `Bearer` header on a browser route is never treated as anonymous.
-Bearer-only apps can use `identity.New` and `Verifier.Middleware` without any SQLite dependency; that identity carries no permissions.
+
+`Public` is GET only, for anyone, and needs no permission.
+Its handler sees no cookie, authorization, trailer, or URL userinfo, and `identity.FromContext` panics in it, because a public answer is the same for everyone.
+It may stream with `http.Flusher`, but cannot hijack the connection.
+A request to it with a `Bearer` credential answers 400, since the caller meant another route, and so does a WebSocket upgrade.
+The only options are `PublicOptions{Probe: true}`, which serves any Host and drops credentials silently, for one health path a load balancer reaches by address, and `CrossOrigin: true`, which adds `Access-Control-Allow-Origin: *`.
+Each public route is logged once at mount, so the log lists them.
+
+Every response, Go's own 404 and 405 included, carries `Cache-Control: no-store`, which a handler may replace, `Referrer-Policy: same-origin`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: frame-ancestors 'none'`, `X-Frame-Options: DENY`, and HSTS on an HTTPS origin.
+Bearer-only services without sessions or SQLite can use `identity.New` and `Verifier.Middleware`, whose identity carries no permissions; it is not for AppKit apps.
 
 Sign-in is `<a href="/auth/login">Sign in</a>`.
 Sign-out is `<form method="post" action="/auth/logout"><button>Sign out</button></form>`.
 An optional `next` parameter selects a local return path.
 There is no automatic sign-in.
 
-AppKit owns `/auth/login`, `/auth/callback`, `/auth/logout`, `/auth/backchannel`, `/auth/session`, `/auth/events`, `/auth/keys`, and `/auth/users/{subject}/keys`.
+AppKit owns `GET /auth/login`, `GET /auth/callback`, `POST /auth/logout`, `POST /auth/backchannel`, `GET /auth/session`, `GET /auth/events`, `/auth/keys`, and `/auth/users/{subject}/keys`; another method on one of them answers 405.
 The session endpoint returns `{ "user": null, "permissions": [] }` when signed out, otherwise the identity and permissions resolved through the application's policy, and `keys` with what the person may give a key (see Personal keys).
 `SessionConfig.OnSessionRequest`, when set, runs on each signed-in session request, which every page makes as it loads, so the app can record that the person is here; its result is added to that body as `app`, so pages get display names, preferences, or other per-person state in the same request.
 The event stream emits `signed-out` when the session ends.
@@ -134,7 +147,7 @@ WebSocket upgrades require the exact Origin.
 Plain HTML forms work without custom JavaScript headers.
 Keep GET/HEAD/OPTIONS handlers free of mutations.
 Use HTTPS for the configured public origin and provider endpoints, except on localhost.
-Do not add permissive CORS or log callback query strings/credentials in proxies.
+Do not add CORS beyond a public route's option, or log callback query strings/credentials in proxies.
 
 Back-channel notifications with `sid` end matching sessions only (and match `sub` too when supplied).
 Subject-only notifications end all that user's sessions.
@@ -146,8 +159,8 @@ Sign-out ends only the app session.
 Rauthy's own session is untouched, so signing in again may not ask for a password.
 Logouts in Rauthy reach the app through back-channel logout.
 
-Bearer access tokens remain valid until expiry after logout: a bearer client is cut off within one access-token lifetime, not instantly.
-Bearer middleware also bounds request/WebSocket lifetime by token expiry.
+Access tokens remain valid until expiry after logout: a service caller is cut off within one access-token lifetime, not instantly.
+Service routes also bound request/WebSocket lifetime by token expiry.
 Token groups remain the token's snapshot.
 
 ## Personal keys
@@ -172,16 +185,16 @@ Tools keep a key in a secrets store, send it only to the app's origin and only i
 
 ## Rauthy
 
-AppKit requires Rauthy 0.37 or later; earlier versions issue access tokens without the standard `at+jwt` type, so bearer routes reject them.
+AppKit requires Rauthy 0.37 or later; earlier versions issue access tokens without the standard `at+jwt` type, so service routes reject them.
 The app's Rauthy client, public or confidential, has `authorization_code`, PKCE `S256`, the scopes `openid`, `email`, and `groups`, and matching access and ID token signing algorithms.
 Its redirect URI is exactly `<APP_ORIGIN>/auth/callback` and its back-channel logout URI is `<APP_ORIGIN>/auth/backchannel`, which Rauthy must be able to reach; wildcards are unnecessary.
-A short token lifetime bounds how long bearer clients keep access after logout.
+A short token lifetime bounds how long service callers keep access after logout.
 Access is granted through Rauthy groups named after the app, such as `example-members`; no SCIM setup is needed.
 An app that calls another one also has the `client_credentials` flow and lists the other app's client ID under its allowed resources (see Service calls).
 
 ## Test an application
 
-`identity/identitytest` starts a local fake Rauthy, so tests exercise the real sign-in, session, CSRF, and bearer paths without a live provider.
+`identity/identitytest` starts a local fake Rauthy, so tests exercise the real sign-in, session, CSRF, and service paths without a live provider.
 
 ```go
 provider := identitytest.NewProvider(t)
@@ -189,10 +202,10 @@ app := httptest.NewServer(nil) // its URL is the configured origin
 sessions, err := identity.NewSessions(ctx, identity.SessionConfig{
     Issuer: provider.Issuer, ClientID: provider.ClientID, Origin: app.URL, /* database, driver, policy */
 })
-// Mount routes on app.Config.Handler, then:
+app.Config.Handler = routes(sessions /* , systems */) // the router, then:
 user := identitytest.User{Subject: "alice", Groups: []string{"observers"}}
 cookie := provider.SignIn(t, app.URL, user)  // session cookie for browser routes
-token := provider.AccessToken(t, user)       // Authorization: Bearer token for bearer routes
+token := provider.AccessToken(t, user)       // Authorization: Bearer token for service routes
 ```
 
 See `TestRoutes` in `examples/minimal/main_test.go` for a complete example.
@@ -290,11 +303,13 @@ accounts, err := sessions.ServiceClient("accounts") // the other application's R
 
 The caller's Rauthy client is confidential, has the `client_credentials` flow, and lists the target's client ID under its allowed resources; Rauthy refuses any other resource with `invalid_target`, so which application may call which is decided in Rauthy, on the calling client.
 A client token has no `sub`; Rauthy names the caller in `azp` and addresses the token to both the caller and the target through `aud`.
-The target's `Bearer` middleware accepts it only because its own client ID is in that audience, so a token minted for one application is refused by every other.
+The target's route, mounted with `router.Service`, accepts it only because the target's own client ID is in that audience, so a token minted for one application is refused by every other.
 It attaches an `Identity` with `Client` true and `Subject` the caller's client ID, and grants the permissions the policy's client list gives that ID; an unlisted client gets 403.
 Read and write rules tell a calling application from a person with `Client`.
 Tokens are renewed before they expire; disabling the caller's client in Rauthy, or removing the resource from it, ends its access within one token lifetime.
 Keep Rauthy's `CLIENT_CREDENTIALS_MAP_SUB` at its default, off, so a client token is never mistaken for a person.
+A caller that reaches the target on an internal address still uses TLS, or a network segment trusted as much, since the token is a bearer credential.
+A public Rauthy client lets a person mint an access token for themselves, which a service route serves with every permission their groups grant, bypassing the delegable list and scopes that limit a personal key; mount a route as service only when that is acceptable.
 `identitytest` issues client tokens through `ClientToken` and serves `ServiceClient`, so service calls are tested without Rauthy.
 
 ## Realtime and frontend
@@ -312,14 +327,16 @@ When the view returns an error, `Run` logs it and tries the change again a secon
 It provides no durability, replay, ordering across concurrent publishers, or cross-process delivery.
 Apps explicitly call `Hub.Close` during shutdown because HTTP shutdown does not close upgraded sockets.
 
-Mount `frontend.New(files)` at `/` after explicit backend handlers in your router.
+Mount `frontend.New(files, frontend.Config{HashedAssets: "assets"})` as the public catch-all, `router.Public("GET /", pages)`, the app's one public subtree.
 Files are read per request, so `os.DirFS` serves edits immediately in development; embed them for production.
 Backend namespaces never receive the SPA fallback, even when their route is missing.
-Existing assets are served directly; missing `/assets/*` paths or paths with file extensions return 404.
-Extensionless paths are SPA routes, so put extensionless static assets under `/assets`.
-Files under `/assets/` are sent as immutable for a year, so put only content-hashed files there; Vite's build output already is.
-Every file outside `/assets/`, `index.html` and the SPA fallback included, is sent with `Cache-Control: no-cache` and an ETag, so updates are seen and unchanged files answer 304.
+Existing files are served directly; missing paths under the hashed assets folder, or with file extensions, return 404.
+Extensionless paths are SPA routes: a missing one gets the shell rather than 404, except under the hashed assets folder, where only content-hashed files belong.
+`HashedAssets` names the folder whose files are named by content hash, as Vite's `assets` already is: they are sent as immutable for a year, so put nothing else there.
+Every other file, `index.html` and the SPA fallback included, is sent with `Cache-Control: no-cache` and an ETag, so updates are seen and unchanged files answer 304; with the zero `Config`, that includes the assets.
+`http.ServeContent` drops `Cache-Control` from a 416 for an unsatisfiable range, so that answer carries no cache policy.
+A compression middleware in front of the frontend would have to weaken the ETag to `W/`, because the compressed bytes differ.
 PWA files such as `manifest.webmanifest` and `sw.js` are ordinary root assets; `.webmanifest` is served as `application/manifest+json`, since Go has no type for it.
 A service worker must never cache or answer backend namespaces.
 Use an embedded, trusted filesystem; arbitrary filesystem adapters can have their own symlink semantics.
-The package adds no router, CORS policy, or frontend toolchain.
+AppKit owns how routes are guarded, never which routes exist, and adds no frontend toolchain.

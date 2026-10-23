@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Ovi1kanobe/appkit/api"
 	"github.com/Ovi1kanobe/appkit/authz"
 	"github.com/Ovi1kanobe/appkit/identity"
 	"github.com/Ovi1kanobe/appkit/identity/identitytest"
@@ -18,7 +19,7 @@ import (
 // TestIdentityTestHelper is how an application tests its routes without Rauthy.
 func TestIdentityTestHelper(t *testing.T) {
 	provider := identitytest.NewProvider(t)
-	app := httptest.NewServer(http.NewServeMux())
+	app := httptest.NewServer(nil)
 	defer app.Close()
 	policy, _ := authz.New(map[string][]string{"observer": {"diagnostics.read"}}, map[string][]string{"observers": {"observer"}}, map[string][]string{"monitor": {"observer"}}, nil)
 	sessions, err := identity.NewSessions(context.Background(), identity.SessionConfig{
@@ -29,15 +30,14 @@ func TestIdentityTestHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sessions.Close()
-	mux := http.NewServeMux()
-	sessions.Routes(mux)
+	router := sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit})
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		actor, _ := identity.FromContext(r.Context())
 		_, _ = w.Write([]byte(actor.Subject))
 	})
-	mux.Handle("/page", sessions.Require(ok))
-	mux.Handle("/api", sessions.Bearer(identity.RequirePermission("diagnostics.read", ok)))
-	app.Config.Handler = mux
+	router.Private("GET /page", "diagnostics.read", ok)
+	router.Service("GET /api", "diagnostics.read", ok)
+	app.Config.Handler = router
 
 	alice := identitytest.User{Subject: "alice", Email: "alice@example.test", Groups: []string{"observers"}}
 	cookie := provider.SignIn(t, app.URL, alice)
@@ -86,7 +86,7 @@ func TestIdentityTestHelper(t *testing.T) {
 // obtain client tokens addressed to the other application's client ID.
 func TestServiceClient(t *testing.T) {
 	provider := identitytest.NewProvider(t)
-	accounts := httptest.NewServer(http.NewServeMux())
+	accounts := httptest.NewServer(nil)
 	defer accounts.Close()
 	policy, _ := authz.New(map[string][]string{"reader": {"profiles.read"}}, nil, map[string][]string{"notes": {"reader"}}, nil)
 	accountsSessions, err := identity.NewSessions(context.Background(), identity.SessionConfig{
@@ -97,12 +97,12 @@ func TestServiceClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer accountsSessions.Close()
-	mux := http.NewServeMux()
-	mux.Handle("/api/profiles", accountsSessions.Bearer(identity.RequirePermission("profiles.read", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	router := accountsSessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit})
+	router.Service("GET /api/profiles", "profiles.read", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		caller, _ := identity.FromContext(r.Context())
 		_, _ = w.Write([]byte(caller.Subject))
-	}))))
-	accounts.Config.Handler = mux
+	}))
+	accounts.Config.Handler = router
 
 	notesPolicy, _ := authz.New(nil, nil, nil, nil)
 	notesSessions, err := identity.NewSessions(context.Background(), identity.SessionConfig{
@@ -140,25 +140,6 @@ func TestServiceClient(t *testing.T) {
 	defer publicSessions.Close()
 	if _, err := publicSessions.ServiceClient(provider.ClientID); err == nil {
 		t.Fatal("public client made a service client")
-	}
-}
-
-// TestRequirePermission checks the 401/403/200 outcomes of identity.RequirePermission.
-func TestRequirePermission(t *testing.T) {
-	handler := identity.RequirePermission("diagnostics.read", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	for _, test := range []struct {
-		actor  *identity.Identity
-		status int
-	}{{nil, 401}, {&identity.Identity{Subject: "a"}, 403}, {&identity.Identity{Subject: "a", Permissions: []string{"diagnostics.read"}}, 200}} {
-		request := httptest.NewRequest(http.MethodGet, "/", nil)
-		if test.actor != nil {
-			request = request.WithContext(identity.WithContext(request.Context(), *test.actor))
-		}
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		if response.Code != test.status {
-			t.Fatalf("status %d, want %d", response.Code, test.status)
-		}
 	}
 }
 

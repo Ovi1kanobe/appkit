@@ -14,13 +14,29 @@ import (
 	"time"
 )
 
+// Config says how New serves the build output.
+type Config struct {
+	// HashedAssets names the folder whose files are named by content hash,
+	// such as Vite's "assets": they are sent as immutable for a year, and a
+	// missing path under it answers 404 instead of the app shell. Empty, no
+	// folder is immutable, and every file is revalidated against its ETag.
+	HashedAssets string
+}
+
 // New accepts a filesystem rooted at compiled frontend output (normally fs.Sub
-// of an embed.FS). Backend routes must be registered on the application's router.
-// Paths with an extension, /assets, and reserved backend namespaces never fall back.
+// of an embed.FS), and is mounted as the app's public catch-all, GET /.
+// Paths with an extension, the hashed assets folder, and reserved backend
+// namespaces never fall back to the shell.
 // Files are read per request, so os.DirFS serves edits immediately in development.
-func New(files fs.FS) (http.Handler, error) {
+func New(files fs.FS, config Config) (http.Handler, error) {
 	if _, err := fs.Stat(files, "index.html"); err != nil {
 		return nil, fmt.Errorf("frontend: index.html: %w", err)
+	}
+	if config.HashedAssets != "" && (!fs.ValidPath(config.HashedAssets) || config.HashedAssets == ".") {
+		return nil, fmt.Errorf("frontend: hashed assets folder %q is not a folder path such as \"assets\"", config.HashedAssets)
+	}
+	inHashedAssets := func(name string) bool {
+		return config.HashedAssets != "" && (name == config.HashedAssets || strings.HasPrefix(name, config.HashedAssets+"/"))
 	}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet && request.Method != http.MethodHead {
@@ -53,10 +69,11 @@ func New(files fs.FS) (http.Handler, error) {
 			if path.Ext(name) == ".webmanifest" {
 				writer.Header().Set("Content-Type", "application/manifest+json")
 			}
-			// Vite names files under /assets by content hash, so they never change.
-			// Everything else, index.html included, is revalidated against its ETag.
+			// Files in the hashed assets folder are named by content hash, so they
+			// never change. Everything else, index.html included, is revalidated
+			// against its ETag.
 			cacheControl := "no-cache"
-			if first == "assets" {
+			if inHashedAssets(name) {
 				cacheControl = "public, max-age=31536000, immutable"
 			}
 			serveWithCacheHeaders(writer, request, name, data, cacheControl)
@@ -70,7 +87,7 @@ func New(files fs.FS) (http.Handler, error) {
 				return
 			}
 		}
-		if first == "assets" || path.Ext(name) != "" {
+		if inHashedAssets(name) || path.Ext(name) != "" {
 			http.NotFound(writer, request)
 			return
 		}

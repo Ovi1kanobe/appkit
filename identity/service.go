@@ -16,8 +16,8 @@ import (
 // as this one. Each request carries an access token that Rauthy issued to
 // this application's client through the client credentials grant, addressed
 // to target, the other application's Rauthy client ID, and renewed before it
-// expires. The other application's Bearer middleware accepts the token because
-// target is in its audience, and grants the permissions its policy lists for
+// expires. The other application's service routes accept the token because
+// target is in their audience, and grant the permissions its policy lists for
 // this application's client ID.
 //
 // Rauthy must allow it: this application's client is confidential, has the

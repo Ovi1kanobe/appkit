@@ -10,7 +10,7 @@ import (
 
 func TestFrontend(t *testing.T) {
 	files := fstest.MapFS{"index.html": {Data: []byte("<h1>App</h1>")}, "assets/app.js": {Data: []byte("console.log('app')")}, "assets/extensionless": {Data: []byte("asset")}, "manifest.webmanifest": {Data: []byte("{}")}}
-	handler, err := New(files)
+	handler, err := New(files, Config{HashedAssets: "assets"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,8 +99,36 @@ func TestFrontend(t *testing.T) {
 	}
 }
 
+// TestFrontendWithoutHashedAssets checks that an empty config makes no folder
+// immutable: assets are revalidated like every other file.
+func TestFrontendWithoutHashedAssets(t *testing.T) {
+	handler, err := New(fstest.MapFS{"index.html": {Data: []byte("<h1>App</h1>")}, "assets/app.js": {Data: []byte("console.log('app')")}}, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		path         string
+		status       int
+		body         string
+		cacheControl string
+	}{{"/assets/app.js", 200, "console.log", "no-cache"}, {"/assets/missing", 200, "<h1>App</h1>", "no-cache"}, {"/assets/missing.js", 404, "", ""}} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest("GET", test.path, nil))
+		cacheControl := response.Header().Get("Cache-Control")
+		if response.Code != test.status || !strings.Contains(response.Body.String(), test.body) || cacheControl != test.cacheControl {
+			t.Fatalf("%s: status=%d cache-control=%q body=%s", test.path, response.Code, cacheControl, response.Body.String())
+		}
+		if entityTag := response.Header().Get("ETag"); (test.status == http.StatusOK) != (entityTag != "") {
+			t.Fatalf("%s: status=%d etag=%q", test.path, response.Code, entityTag)
+		}
+	}
+}
+
 func TestMissingIndex(t *testing.T) {
-	if _, err := New(fstest.MapFS{}); err == nil {
+	if _, err := New(fstest.MapFS{}, Config{}); err == nil {
 		t.Fatal("missing index accepted")
+	}
+	if _, err := New(fstest.MapFS{"index.html": {Data: []byte("app")}}, Config{HashedAssets: "/assets"}); err == nil {
+		t.Fatal("invalid hashed assets folder accepted")
 	}
 }

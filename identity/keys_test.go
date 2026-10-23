@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Ovi1kanobe/appkit/api"
 	"github.com/Ovi1kanobe/appkit/authz"
 	"github.com/Ovi1kanobe/appkit/identity"
 	"github.com/Ovi1kanobe/appkit/identity/identitytest"
@@ -103,14 +104,6 @@ func TestKeys(t *testing.T) {
 	if body := status(t, f.request("GET", "/auth/session", nil, bearer(made.Secret), ""), 200); !strings.Contains(body, `"key_id":"`+made.Key.ID+`"`) || !strings.Contains(body, `"key":{"expires_at":`) || !strings.Contains(body, `"scopes":["diagnostics.read"]`) {
 		t.Fatalf("key session: %s", body)
 	}
-	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
-	routes := func() {
-		mux := f.app.Config.Handler.(*http.ServeMux)
-		mux.Handle("/diagnostics", f.sessions.Require(identity.RequirePermission("diagnostics.read", ok)))
-		mux.Handle("/notes", f.sessions.Require(identity.RequirePermission("notes.write", ok)))
-		mux.Handle("POST /mutate", f.sessions.Require(ok))
-	}
-	routes()
 	status(t, f.request("GET", "/diagnostics", nil, bearer(made.Secret), ""), 200)
 	status(t, f.request("GET", "/notes", nil, bearer(made.Secret), ""), 403)
 	status(t, f.request("POST", "/mutate", nil, bearer(made.Secret), ""), 200) // No CSRF check for a key.
@@ -184,7 +177,6 @@ func TestKeys(t *testing.T) {
 		t.Fatal("key secret persisted")
 	}
 	f.open()
-	routes()
 	status(t, f.request("GET", "/diagnostics", nil, bearer(third.Secret), ""), 200)
 	short := f.createKey(alice, `{"name":"short","scopes":["diagnostics.read"],"lifetime_seconds":1}`, 201)
 	status(t, f.request("GET", "/diagnostics", nil, bearer(short.Secret), ""), 200)
@@ -222,7 +214,7 @@ func TestKeysNotIssued(t *testing.T) {
 // TestIdentityTestKey is how an application tests a route a key may call.
 func TestIdentityTestKey(t *testing.T) {
 	provider := identitytest.NewProvider(t)
-	app := httptest.NewServer(http.NewServeMux())
+	app := httptest.NewServer(nil)
 	defer app.Close()
 	policy, _ := authz.New(map[string][]string{"observer": {"diagnostics.read"}}, map[string][]string{"observers": {"observer"}}, nil, []string{"diagnostics.read"})
 	sessions, err := identity.NewSessions(context.Background(), identity.SessionConfig{Issuer: provider.Issuer, ClientID: provider.ClientID, Origin: app.URL, DatabasePath: filepath.Join(t.TempDir(), "sessions.sqlite"), Policy: policy})
@@ -230,10 +222,9 @@ func TestIdentityTestKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sessions.Close()
-	mux := http.NewServeMux()
-	sessions.Routes(mux)
-	mux.Handle("/api/diagnostics", sessions.Require(identity.RequirePermission("diagnostics.read", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))))
-	app.Config.Handler = mux
+	router := sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit})
+	router.Private("GET /api/diagnostics", "diagnostics.read", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	app.Config.Handler = router
 	cookie := provider.SignIn(t, app.URL, identitytest.User{Subject: "alice", Groups: []string{"observers"}})
 	id, secret := provider.CreateKey(t, app.URL, cookie, "ci", "diagnostics.read")
 	call := func() int {

@@ -46,7 +46,7 @@ func TestRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sessions.Close()
-	pages, err := frontend.New(fstest.MapFS{"index.html": {Data: []byte("app")}})
+	pages, err := frontend.New(fstest.MapFS{"index.html": {Data: []byte("app")}}, frontend.Config{HashedAssets: "assets"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,6 @@ func TestRoutes(t *testing.T) {
 		{"signed out session", nil, "GET", "/auth/session", "", 200, `"user":null`},
 		{"member signed in", memberCookie, "GET", "/auth/session", "", 200, `"sam"`},
 		{"page", nil, "GET", "/", "", 200, "app"},
-		{"account page needs sign-in", nil, "GET", "/account", "", 401, `"error"`},
 		{"no keys while nothing is delegable", memberCookie, "POST", "/auth/keys", `{"name":"ci","scopes":["x"],"lifetime_seconds":60}`, 400, "does not issue keys"},
 	} {
 		status, body := send(step.cookie, step.method, step.path, step.body)
@@ -93,6 +92,24 @@ func TestRoutes(t *testing.T) {
 		}
 		if step.path == "/auth/session" && strings.Contains(body, `"keys"`) {
 			t.Fatalf("%s: keys offered while nothing is delegable: %s", step.name, body)
+		}
+	}
+	// Health answers a probe that reaches the app by address, and a page is the
+	// shell, revalidated against its ETag.
+	probe, _ := http.NewRequest("GET", app.URL+"/api/health", nil)
+	probe.Host = "10.0.0.5:8080"
+	page, _ := http.NewRequest("GET", app.URL+"/account", nil)
+	for _, request := range []*http.Request{probe, page} {
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != 200 {
+			t.Fatalf("%s: %d", request.URL.Path, response.StatusCode)
+		}
+		if request == page && (response.Header.Get("Cache-Control") != "no-cache" || response.Header.Get("ETag") == "") {
+			t.Fatalf("page cache-control %q etag %q", response.Header.Get("Cache-Control"), response.Header.Get("ETag"))
 		}
 	}
 	// The session request recorded the member's profile.
