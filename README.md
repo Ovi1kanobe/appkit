@@ -106,8 +106,18 @@ API and WebSocket errors from AppKit use the same `{"error": "..."}` body as app
 Its handler sees no cookie, authorization, trailer, or URL userinfo, and `identity.FromContext` panics in it, because a public answer is the same for everyone.
 It may stream with `http.Flusher`, but cannot hijack the connection.
 A request to it with a `Bearer` credential answers 400, since the caller meant another route, and so does a WebSocket upgrade.
-The only options are `PublicOptions{Probe: true}`, which serves any Host and drops credentials silently, for one health path a load balancer reaches by address, and `CrossOrigin: true`, which adds `Access-Control-Allow-Origin: *`.
-Each public route is logged once at mount, so the log lists them.
+Its options are `PublicOptions{Probe: true}`, which serves any Host and drops credentials silently, for one health path a load balancer reaches by address, `CrossOrigin: true`, which adds `Access-Control-Allow-Origin: *`, and `RateLimit`, below.
+Each public route is logged once at mount, with its rate limit, so the log lists them.
+
+`RateLimit` caps how often one client address may call a route, on any kind: `identity.PublicOptions{RateLimit: identity.RateLimit{Requests: 60, Per: time.Minute}}`, and likewise `PrivateOptions` and `ServiceOptions`, as the last argument.
+A public route needs it most, since it takes no credential; a private or service route can still be hammered with a stolen key or token.
+Each address has a token bucket in memory holding `Requests`, refilled continuously at `Requests` per `Per`; idle addresses are dropped, so memory stays bounded.
+Over the limit a request answers 429 with `{"error": "Too many requests; try again later."}` and `Retry-After` in whole seconds, before the Host check or any authentication, so it costs nothing further, and is not logged.
+The zero value means no limit; one field without the other, a negative one, or a second options value panics at mount.
+The address is the last `X-Forwarded-For` entry, which the reverse proxy appends, since the client can forge earlier ones; else `X-Real-IP`; else the connection's address.
+This is trustworthy because an app listens on loopback behind the proxy, its only caller; an app reached directly would let any client forge the header and pick its own address.
+The proxy must set one of the headers; without them every client shares the proxy's address and one bucket.
+Limits are per instance and per route, and reset when the app restarts.
 
 Every response, Go's own 404 and 405 included, carries `Cache-Control: no-store`, which a handler may replace, `Referrer-Policy: same-origin`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: frame-ancestors 'none'`, `X-Frame-Options: DENY`, and HSTS on an HTTPS origin.
 Bearer-only services without sessions or SQLite can use `identity.New` and `Verifier.Middleware`, whose identity carries no permissions; it is not for AppKit apps.
