@@ -37,6 +37,51 @@ func TestFrontend(t *testing.T) {
 			t.Fatalf("unsafe path %s returned %d", target, response.Code)
 		}
 	}
+	// A router's public route sets no-store by default; the frontend must override it, except on a 404.
+	routeWithNoStoreDefault := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Cache-Control", "no-store")
+		handler.ServeHTTP(writer, request)
+	})
+	for _, test := range []struct {
+		path         string
+		status       int
+		cacheControl string
+	}{{"/", 200, "no-cache"}, {"/index.html", 200, "no-cache"}, {"/bots/123", 200, "no-cache"}, {"/manifest.webmanifest", 200, "no-cache"}, {"/assets/app.js", 200, "public, max-age=31536000, immutable"}, {"/assets/missing.js", 404, "no-store"}} {
+		for _, method := range []string{"GET", "HEAD"} {
+			t.Run("cache "+method+" "+test.path, func(t *testing.T) {
+				response := httptest.NewRecorder()
+				routeWithNoStoreDefault.ServeHTTP(response, httptest.NewRequest(method, test.path, nil))
+				cacheControl := response.Header().Get("Cache-Control")
+				if response.Code != test.status || cacheControl != test.cacheControl {
+					t.Fatalf("status=%d cache-control=%q", response.Code, cacheControl)
+				}
+				if entityTag := response.Header().Get("ETag"); test.status == http.StatusNotFound && entityTag != "" {
+					t.Fatalf("404 sent ETag %q", entityTag)
+				}
+			})
+		}
+	}
+	// A 304 carries the same ETag and Cache-Control, and still overrides the route's no-store.
+	for _, test := range []struct {
+		path         string
+		cacheControl string
+	}{{"/", "no-cache"}, {"/bots/123", "no-cache"}, {"/assets/app.js", "public, max-age=31536000, immutable"}} {
+		firstResponse := httptest.NewRecorder()
+		routeWithNoStoreDefault.ServeHTTP(firstResponse, httptest.NewRequest("GET", test.path, nil))
+		entityTag := firstResponse.Header().Get("ETag")
+		if entityTag == "" {
+			t.Fatalf("%s sent no ETag", test.path)
+		}
+		revalidationRequest := httptest.NewRequest("GET", test.path, nil)
+		revalidationRequest.Header.Set("If-None-Match", entityTag)
+		revalidationResponse := httptest.NewRecorder()
+		routeWithNoStoreDefault.ServeHTTP(revalidationResponse, revalidationRequest)
+		revalidationEntityTag := revalidationResponse.Header().Get("ETag")
+		revalidationCacheControl := revalidationResponse.Header().Get("Cache-Control")
+		if revalidationResponse.Code != http.StatusNotModified || revalidationResponse.Body.Len() != 0 || revalidationEntityTag != entityTag || revalidationCacheControl != test.cacheControl {
+			t.Fatalf("%s revalidation status=%d body=%q etag=%q cache-control=%q", test.path, revalidationResponse.Code, revalidationResponse.Body.String(), revalidationEntityTag, revalidationCacheControl)
+		}
+	}
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest("POST", "/bots/123", nil))
 	if response.Code != 405 {

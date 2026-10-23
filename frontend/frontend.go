@@ -3,6 +3,8 @@ package frontend
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -51,7 +53,13 @@ func New(files fs.FS) (http.Handler, error) {
 			if path.Ext(name) == ".webmanifest" {
 				writer.Header().Set("Content-Type", "application/manifest+json")
 			}
-			http.ServeContent(writer, request, name, time.Time{}, bytes.NewReader(data))
+			// Vite names files under /assets by content hash, so they never change.
+			// Everything else, index.html included, is revalidated against its ETag.
+			cacheControl := "no-cache"
+			if first == "assets" {
+				cacheControl = "public, max-age=31536000, immutable"
+			}
+			serveWithCacheHeaders(writer, request, name, data, cacheControl)
 			return
 		}
 		if !errors.Is(readErr, fs.ErrNotExist) {
@@ -67,12 +75,22 @@ func New(files fs.FS) (http.Handler, error) {
 			return
 		}
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
-		writer.Header().Set("Cache-Control", "no-cache")
 		index, err := fs.ReadFile(files, "index.html")
 		if err != nil {
 			http.Error(writer, "frontend unavailable", http.StatusInternalServerError)
 			return
 		}
-		http.ServeContent(writer, request, "index.html", time.Time{}, bytes.NewReader(index))
+		serveWithCacheHeaders(writer, request, "index.html", index, "no-cache")
 	}), nil
+}
+
+// serveWithCacheHeaders sets Cache-Control and an ETag from the content hash on
+// every served response; files carry no modification time, so the ETag is what
+// lets ServeContent answer a matching If-None-Match with 304.
+func serveWithCacheHeaders(writer http.ResponseWriter, request *http.Request, name string, data []byte, cacheControl string) {
+	writer.Header().Set("Cache-Control", cacheControl)
+	contentHash := sha256.Sum256(data)
+	// 128 bits of the hash is ample for change detection and keeps the header short.
+	writer.Header().Set("ETag", `"`+hex.EncodeToString(contentHash[:16])+`"`)
+	http.ServeContent(writer, request, name, time.Time{}, bytes.NewReader(data))
 }
