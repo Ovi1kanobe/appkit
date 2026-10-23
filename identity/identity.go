@@ -42,7 +42,13 @@ func WithContext(ctx context.Context, actor Identity) context.Context {
 	return context.WithValue(ctx, contextKey{}, actor)
 }
 
+// FromContext returns the identity a private or service route attached, and
+// whether there is one. It panics on a public route's request, because a
+// public handler serves everyone the same and must never read who is asking.
 func FromContext(ctx context.Context) (Identity, bool) {
+	if ctx.Value(publicContextKey{}) != nil {
+		panic("identity: a public route's handler read the identity; public handlers serve everyone the same")
+	}
 	actor, ok := ctx.Value(contextKey{}).(Identity)
 	actor.Groups = append([]string(nil), actor.Groups...)
 	actor.Roles = append([]string(nil), actor.Roles...)
@@ -50,13 +56,10 @@ func FromContext(ctx context.Context) (Identity, bool) {
 	return actor, ok && actor.Subject != ""
 }
 
-// RequirePermission passes a request on only when its authenticated identity
+// requirePermission passes a request on only when its authenticated identity
 // holds permission: 401 without an identity, 403 without the permission.
-// Wrap it inside Require, Optional, or Bearer, which attach the permissions.
-func RequirePermission(permission string, next http.Handler) http.Handler {
-	if permission == "" || next == nil {
-		panic("identity: RequirePermission needs a permission and handler")
-	}
+// The Router puts it inside require or bearer, which attach the permissions.
+func requirePermission(permission string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		person, ok := FromContext(request.Context())
 		if !ok {

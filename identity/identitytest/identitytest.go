@@ -1,5 +1,6 @@
 // Package identitytest provides a local fake Rauthy for application tests, so
-// sign-in, sessions, CSRF, and bearer routes can be tested without a live provider.
+// sign-in, sessions, CSRF, private routes, and service routes can be tested
+// without a live provider.
 package identitytest
 
 import (
@@ -148,7 +149,7 @@ func (provider *Provider) token(tokenType string, claims map[string]any) (string
 	return signed.CompactSerialize()
 }
 
-// AccessToken returns a bearer access token for user, accepted by bearer routes.
+// AccessToken returns a Rauthy access token for user, accepted by service routes.
 func (provider *Provider) AccessToken(t testing.TB, user User) string {
 	t.Helper()
 	token, err := provider.token("at+jwt", provider.claims(user))
@@ -159,7 +160,7 @@ func (provider *Provider) AccessToken(t testing.TB, user User) string {
 }
 
 // ClientToken returns the access token Rauthy would issue to the application
-// whose Rauthy client ID is clientID when it requests resources, so bearer
+// whose Rauthy client ID is clientID when it requests resources, so service
 // routes can be tested as another application calls them. Include the tested
 // application's ClientID in resources, or its routes refuse the token.
 func (provider *Provider) ClientToken(t testing.TB, clientID string, resources ...string) string {

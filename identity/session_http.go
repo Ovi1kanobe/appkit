@@ -17,27 +17,26 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// Routes mounts the complete /auth/ namespace, including login, callback,
-// logout, back-channel logout, session JSON, session-end events, and key
-// management.
-func (s *Sessions) Routes(mux *http.ServeMux) {
-	auth := http.NewServeMux()
-	auth.HandleFunc("GET /auth/login", s.login)
-	auth.HandleFunc("GET /auth/callback", s.callback)
-	auth.HandleFunc("POST /auth/logout", s.logout)
-	auth.Handle("POST /auth/backchannel", s.verifier.logoutHandler(s.applyLogout))
-	auth.Handle("GET /auth/session", s.Optional(http.HandlerFunc(s.sessionJSON)))
-	auth.Handle("GET /auth/events", s.Optional(http.HandlerFunc(s.events)))
-	s.keyRoutes(auth)
-	mux.Handle("/auth/", s.boundary(auth))
+// routes mounts AppKit's auth routes one by one, each with its method:
+// login, callback, logout, back-channel logout, session JSON, session-end
+// events, and key management. There is no method-less /auth/ subtree, so an
+// application's GET catch-all never conflicts with it.
+func (s *Sessions) routes(mux *http.ServeMux) {
+	mux.Handle("GET /auth/login", s.boundary(http.HandlerFunc(s.login)))
+	mux.Handle("GET /auth/callback", s.boundary(http.HandlerFunc(s.callback)))
+	mux.Handle("POST /auth/logout", s.boundary(http.HandlerFunc(s.logout)))
+	mux.Handle("POST /auth/backchannel", s.boundary(s.verifier.logoutHandler(s.applyLogout)))
+	mux.Handle("GET /auth/session", s.optional(http.HandlerFunc(s.sessionJSON)))
+	mux.Handle("GET /auth/events", s.optional(http.HandlerFunc(s.events)))
+	s.keyRoutes(mux)
 }
 
-// Bearer authenticates a separate non-browser route with an access token and
-// attaches the identity with its permissions: a person's from their groups, a
-// calling application's from the policy's client list. It ignores browser
-// cookies and refuses a personal key; logout does not revoke an already
-// issued access token.
-func (s *Sessions) Bearer(next http.Handler) http.Handler {
+// bearer authenticates a route with a Rauthy access token and attaches the
+// identity with its permissions: a person's from their groups, a calling
+// application's from the policy's client list. It ignores browser cookies
+// and refuses a personal key; logout does not revoke an already issued
+// access token.
+func (s *Sessions) bearer(next http.Handler) http.Handler {
 	return s.verifier.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		caller, _ := FromContext(r.Context())
 		if caller.Client {
@@ -49,14 +48,11 @@ func (s *Sessions) Bearer(next http.Handler) http.Handler {
 	}))
 }
 
+// boundary refuses a request whose Host is not the configured origin's, so a
+// browser route is reached only through the name its cookies belong to. The
+// Router sets the fixed security headers before any route runs.
 func (s *Sessions) boundary(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if s.origin.Scheme == "https" {
-			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
-		}
 		if !strings.EqualFold(r.Host, s.origin.Host) {
 			message := "This application is served at " + s.config.Origin
 			if strings.HasPrefix(r.URL.Path, "/api/") || r.Header.Get("Upgrade") != "" {
@@ -92,13 +88,13 @@ func (s *Sessions) csrfOK(r *http.Request) bool {
 	return s.sameOrigin(r)
 }
 
-// Optional attaches a browser identity if a live session exists, and protects
+// optional attaches a browser identity if a live session exists, and protects
 // mutations and WebSocket upgrades against cross-origin use. A request with a
 // Bearer header presents a personal key instead and is never anonymous: it is
 // served as the key's holder or refused with 401, and never falls back to the
 // cookie. The request context ends when its session or key expires or is
 // revoked. Handlers must respect that context.
-func (s *Sessions) Optional(next http.Handler) http.Handler {
+func (s *Sessions) optional(next http.Handler) http.Handler {
 	return s.boundary(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isKeyRequest(r) {
 			s.admitKey(w, r, next)
@@ -135,16 +131,13 @@ func (s *Sessions) Optional(next http.Handler) http.Handler {
 	}))
 }
 
-// Require redirects anonymous page requests to sign-in. API and WebSocket
-// requests receive 401. Resource permissions remain the application's decision.
-func (s *Sessions) Require(next http.Handler) http.Handler {
-	return s.Optional(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// require is optional that answers 401 as JSON when no one is signed in,
+// for HTTP and WebSocket requests alike, never a redirect: the single-page
+// app sends a signed-out person to sign in. Permissions are checked after it.
+func (s *Sessions) require(next http.Handler) http.Handler {
+	return s.optional(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := FromContext(r.Context()); !ok {
-			if r.Method == "GET" && strings.Contains(r.Header.Get("Accept"), "text/html") && r.Header.Get("Upgrade") == "" {
-				http.Redirect(w, r, "/auth/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
-			} else {
-				writeError(w, http.StatusUnauthorized, "Sign in required.")
-			}
+			writeError(w, http.StatusUnauthorized, "Sign in required.")
 			return
 		}
 		next.ServeHTTP(w, r)

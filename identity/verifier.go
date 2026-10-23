@@ -146,6 +146,10 @@ func (verifier *Verifier) authenticateRequest(request *http.Request) (Identity, 
 	return verifier.authenticate(request.Context(), authorizationFields[1])
 }
 
+// Middleware authenticates a Rauthy access token and attaches its identity,
+// with no permissions, for a bearer-only service that has no sessions and no
+// SQLite. It is not for AppKit apps: they mount service routes with
+// Router.Service, which resolves the policy's permissions and checks one.
 func (verifier *Verifier) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		actor, err := verifier.authenticateRequest(request)

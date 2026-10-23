@@ -45,17 +45,17 @@ func (s *Sessions) viewKeys(records []keyRecord) []keyView {
 // keyRoutes mounts key management: a person's own keys, and when the app names
 // a permission for it, any person's keys behind that permission. A key cannot
 // reach any of them.
-func (s *Sessions) keyRoutes(auth *http.ServeMux) {
-	auth.Handle("GET /auth/keys", s.Require(s.browserOnly(s.listKeys)))
-	auth.Handle("POST /auth/keys", api.LimitBody(4<<10, s.Require(s.browserOnly(s.createKeyHandler))))
-	auth.Handle("DELETE /auth/keys/{id}", s.Require(s.browserOnly(s.revokeKeyHandler)))
+func (s *Sessions) keyRoutes(mux *http.ServeMux) {
+	mux.Handle("GET /auth/keys", s.require(s.browserOnly(s.listKeys)))
+	mux.Handle("POST /auth/keys", api.LimitBody(4<<10, s.require(s.browserOnly(s.createKeyHandler))))
+	mux.Handle("DELETE /auth/keys/{id}", s.require(s.browserOnly(s.revokeKeyHandler)))
 	permission := s.config.KeyAdminPermission
 	if permission == "" {
 		return
 	}
-	auth.Handle("GET "+keyAdminPattern, s.Require(RequirePermission(permission, s.browserOnly(s.listSubjectKeys))))
-	auth.Handle("DELETE "+keyAdminPattern, s.Require(RequirePermission(permission, s.browserOnly(s.revokeSubjectKeys))))
-	auth.Handle("DELETE "+keyAdminPattern+"/{id}", s.Require(RequirePermission(permission, s.browserOnly(s.revokeSubjectKey))))
+	mux.Handle("GET "+keyAdminPattern, s.require(requirePermission(permission, s.browserOnly(s.listSubjectKeys))))
+	mux.Handle("DELETE "+keyAdminPattern, s.require(requirePermission(permission, s.browserOnly(s.revokeSubjectKeys))))
+	mux.Handle("DELETE "+keyAdminPattern+"/{id}", s.require(requirePermission(permission, s.browserOnly(s.revokeSubjectKey))))
 }
 
 // browserOnly refuses a request a key made, so a key can never mint, list, or
