@@ -47,7 +47,7 @@ An admin enters the email provider's API key once on Settings and sees that it i
 - FR-005: An admin must be able to store the email provider's API key, encrypted, and see only whether it is set and its last four characters.
 
 ## Key entities
-- Note: text, author by subject, created time; belongs to one person.
+- Note: text, author by subject, created time; belongs to one person; a note a visitor posted belongs to the public subject, and no member may delete it.
 - Profile: a signed-in person's subject and email, recorded at every session request.
 - Email settings: one row holding the encrypted API key.
 
@@ -103,14 +103,16 @@ An admin enters the email provider's API key once on Settings and sees that it i
 - Called by a monitoring app, client `monitor`, for the process status at `/api/status`.
 
 ## Public routes
-| Route | Fields | Who calls it and why |
-| --- | --- | --- |
-| `GET /api/notes/public` | `id`, `text`, `created_at` | An office wall display, which shows the latest notes without anyone signing in |
+| Route | Accepts | Fields | Who calls it and why |
+| --- | --- | --- | --- |
+| `GET /api/notes/public` | | `id`, `text`, `created_at` | An office wall display, which shows the latest notes without anyone signing in |
+| `POST /api/notes/public` | `text` | `id`, `text`, `created_at` | A visitor page on any origin, which lets someone who is not signed in leave a note |
 
 ## Decisions
 - Status is also served to calling apps at `/api/status`, instead of a separate monitoring app, because the example must show a service route.
 - Notes are also served signed out at `/api/notes/public`, because the example must show a public data route.
-- The public notes route allows 60 requests a minute per address, enough for a wall display and too few to flood it.
+- The public notes route allows 60 requests a minute per address, enough for a wall display and too few to flood it, and any origin may read it, so the visitor page can show the list.
+- Visitors post notes signed out at `POST /api/notes/public`, because the example must show a public write; it accepts any origin, since the visitor page lives on another site, and allows 5 posts a minute per address, enough for a person and too few to flood the list.
 
 ## Out of scope
 - Sending email.
