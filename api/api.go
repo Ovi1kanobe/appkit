@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 )
 
@@ -45,10 +46,20 @@ func Unavailable(text string) error {
 // ErrNotJSON is the answer when a request body cannot be decoded.
 var ErrNotJSON = Invalid("The request body is not valid JSON.")
 
+// ErrNotJSONContentType is the answer, with 415, when a request does not say
+// its body is JSON.
+var ErrNotJSONContentType error = &statusError{status: http.StatusUnsupportedMediaType, text: "Send JSON with Content-Type: application/json."}
+
 // ReadJSON decodes the request body into value: one JSON value and nothing
-// after it. A body over its limit returns the *http.MaxBytesError, which
-// WriteError answers with 413; anything else that fails returns ErrNotJSON.
+// after it. A request whose Content-Type is not application/json, a charset
+// or other parameter allowed, returns ErrNotJSONContentType before the body
+// is read, so a plain HTML form cannot reach a JSON route. A body over its
+// limit returns the *http.MaxBytesError, which WriteError answers with 413;
+// anything else that fails returns ErrNotJSON.
 func ReadJSON(request *http.Request, value any) error {
+	if mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type")); err != nil || mediaType != "application/json" {
+		return ErrNotJSONContentType
+	}
 	decoder := json.NewDecoder(request.Body)
 	if err := decoder.Decode(value); err != nil {
 		return notJSON(err)
