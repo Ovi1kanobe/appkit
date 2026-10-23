@@ -62,7 +62,7 @@ func TestRouter(t *testing.T) {
 		{func() { router.Private("GET /api/me", "diagnostics.read", nil) }, `identity: router.Private("GET /api/me"): the handler is nil`},
 		{func() { router.Service("GET /api/status", "diagnostics.read", nil) }, `identity: router.Service("GET /api/status"): the handler is nil`},
 		{func() { router.Public("GET /api/catalogue", nil) }, `identity: router.Public("GET /api/catalogue"): the handler is nil`},
-		{func() { router.Public("POST /api/posts", ok) }, `identity: router.Public("POST /api/posts"): public routes are GET only`},
+		{func() { router.Public("POST /api/posts", ok) }, `identity: router.Public("POST /api/posts"): a write names its Origin, identity.SameOrigin or identity.AnyOrigin`},
 		{func() { router.Public("GET /api/catalogue", ok, identity.PublicOptions{}, identity.PublicOptions{}) }, `identity: router.Public("GET /api/catalogue"): pass at most one PublicOptions`},
 		{func() {
 			router.Private("GET /api/notes", "diagnostics.read", ok, identity.PrivateOptions{}, identity.PrivateOptions{})
@@ -130,11 +130,11 @@ func TestRouter(t *testing.T) {
 	identity.SetRouterRateLimitKeys(router, defaultKeys)
 	slog.SetDefault(defaultLogger)
 	for _, line := range []string{
-		`"msg":"AppKit public route","pattern":"GET /public/echo","subtree":false,"probe":false,"cross_origin":false,"rate_limit":""`,
-		`"msg":"AppKit public route","pattern":"GET /public/limited","subtree":false,"probe":false,"cross_origin":true,"rate_limit":"2/1m0s"`,
-		`"msg":"AppKit public route","pattern":"GET /public/shared","subtree":false,"probe":false,"cross_origin":true`,
-		`"msg":"AppKit public route","pattern":"GET /files/","subtree":true,"probe":false,"cross_origin":false`,
-		`"msg":"AppKit public route","pattern":"GET /health","subtree":false,"probe":true,"cross_origin":false`,
+		`"msg":"AppKit public route","pattern":"GET /public/echo","subtree":false,"probe":false,"origin":"","cross_origin":false,"cross_origin_request_headers":[],"rate_limit":""`,
+		`"msg":"AppKit public route","pattern":"GET /public/limited","subtree":false,"probe":false,"origin":"","cross_origin":true,"cross_origin_request_headers":[],"rate_limit":"2/1m0s"`,
+		`"msg":"AppKit public route","pattern":"GET /public/shared","subtree":false,"probe":false,"origin":"","cross_origin":true`,
+		`"msg":"AppKit public route","pattern":"GET /files/","subtree":true,"probe":false,"origin":"","cross_origin":false`,
+		`"msg":"AppKit public route","pattern":"GET /health","subtree":false,"probe":true,"origin":"","cross_origin":false`,
 	} {
 		if !strings.Contains(mountLog.String(), line) {
 			t.Fatalf("mount log missing %s in:\n%s", line, mountLog.String())
@@ -337,7 +337,7 @@ func TestRouter(t *testing.T) {
 	request.AddCookie(cookie)
 	func() {
 		defer func() {
-			if recovered := fmt.Sprint(recover()); recovered != "identity: a public route's handler read the identity; public handlers serve everyone the same" {
+			if recovered := fmt.Sprint(recover()); recovered != "identity: a public route's handler read the identity; a public answer is independent of any identity, and a public write records identity.PublicSubject" {
 				t.Fatalf("public identity read: %q", recovered)
 			}
 		}()
