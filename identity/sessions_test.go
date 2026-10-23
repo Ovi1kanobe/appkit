@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Ovi1kanobe/appkit/api"
 	"github.com/Ovi1kanobe/appkit/authz"
 	"github.com/Ovi1kanobe/appkit/identity"
 	"github.com/Ovi1kanobe/appkit/realtime"
@@ -104,7 +105,7 @@ func (f *sessionFixture) open() {
 		f.t.Fatal(err)
 	}
 	f.sessions = s
-	router := s.Router()
+	router := s.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit})
 	who := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a, _ := identity.FromContext(r.Context())
 		deadline, _ := r.Context().Deadline()

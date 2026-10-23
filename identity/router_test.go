@@ -33,7 +33,9 @@ func TestRouter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sessions.Close()
-	router := sessions.Router()
+	// A small limit, so the 413 case shows the config's value is the one applied.
+	const bodyLimit = 64 << 10
+	router := sessions.Router(identity.RouterConfig{BodyLimit: bodyLimit})
 	app.Config.Handler = router
 
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) })
@@ -57,7 +59,12 @@ func TestRouter(t *testing.T) {
 		{func() { router.Public("GET /api/catalogue", ok, identity.PublicOptions{}, identity.PublicOptions{}) }, `identity: router.Public("GET /api/catalogue"): pass at most one PublicOptions`},
 		{func() { router.Public("GET /probes/", ok, identity.PublicOptions{Probe: true}) }, `identity: router.Public("GET /probes/"): a probe serves one path, never a subtree`},
 		{func() { router.Public("GET /probes/{rest...}", ok, identity.PublicOptions{Probe: true}) }, `never a subtree`},
-		{func() { sessions.Router() }, `identity: Sessions.Router called twice; mount every route on the one router`},
+		{func() { router.Private("GET /auth/me", "diagnostics.read", ok) }, `identity: router.Private("GET /auth/me"): /auth/ belongs to AppKit; mount the route elsewhere`},
+		{func() { router.Service("POST /auth", "diagnostics.read", ok) }, `identity: router.Service("POST /auth"): /auth/ belongs to AppKit`},
+		{func() { router.Public("GET /auth/", ok) }, `identity: router.Public("GET /auth/"): /auth/ belongs to AppKit`},
+		{func() { sessions.Router(identity.RouterConfig{}) }, `identity: Sessions.Router needs a BodyLimit above zero; pass one such as api.DefaultBodyLimit`},
+		{func() { sessions.Router(identity.RouterConfig{BodyLimit: -1}) }, `identity: Sessions.Router needs a BodyLimit above zero`},
+		{func() { sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit}) }, `identity: Sessions.Router called twice; mount every route on the one router`},
 	} {
 		func() {
 			defer func() {
@@ -73,16 +80,18 @@ func TestRouter(t *testing.T) {
 	var mountLog bytes.Buffer
 	defaultLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&mountLog, nil)))
-	router.Public("GET /public/echo", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	echo := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, canHijack := w.(http.Hijacker)
 		_, canUnwrap := w.(interface{ Unwrap() http.ResponseWriter })
-		_ = json.NewEncoder(w).Encode(map[string]any{"cookie": r.Header.Get("Cookie"), "authorization": r.Header.Get("Authorization"), "proxy_authorization": r.Header.Get("Proxy-Authorization"), "hijack": canHijack || canUnwrap})
-	}))
+		_, canFlush := w.(http.Flusher)
+		_ = json.NewEncoder(w).Encode(map[string]any{"cookie": r.Header.Get("Cookie"), "authorization": r.Header.Get("Authorization"), "proxy_authorization": r.Header.Get("Proxy-Authorization"), "user": r.URL.User.String(), "hijack": canHijack || canUnwrap, "flush": canFlush})
+	})
+	router.Public("GET /public/echo", echo)
 	router.Public("GET /public/reads-identity", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { identity.FromContext(r.Context()) }))
 	router.Public("GET /public/cached", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Header().Set("Cache-Control", "max-age=60") }))
 	router.Public("GET /public/shared", ok, identity.PublicOptions{CrossOrigin: true})
 	router.Public("GET /files/", ok)
-	router.Public("GET /health", ok, identity.PublicOptions{Probe: true})
+	router.Public("GET /health", echo, identity.PublicOptions{Probe: true})
 	slog.SetDefault(defaultLogger)
 	for _, line := range []string{
 		`"msg":"AppKit public route","pattern":"GET /public/echo","subtree":false,"probe":false,"cross_origin":false`,
@@ -116,7 +125,7 @@ func TestRouter(t *testing.T) {
 	leaving := provider.SignIn(t, app.URL, identitytest.User{Subject: "bob", Groups: []string{"observers"}})
 	_, key := provider.CreateKey(t, app.URL, cookie, "ci", "diagnostics.read")
 	token := provider.AccessToken(t, alice)
-	overDefault := `{"pad":"` + strings.Repeat("p", api.DefaultBodyLimit) + `"}`
+	overLimit := `{"pad":"` + strings.Repeat("p", bodyLimit) + `"}`
 	fixed := map[string]string{"Cache-Control": "no-store", "Referrer-Policy": "same-origin", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "frame-ancestors 'none'", "X-Frame-Options": "DENY", "Strict-Transport-Security": ""}
 	sameOrigin := map[string]string{"Origin": app.URL, "Content-Type": "application/json"}
 	for _, test := range []struct {
@@ -133,12 +142,12 @@ func TestRouter(t *testing.T) {
 		{"mux 404 carries the fixed headers", "GET", "/nothing", "", nil, nil, "", 404, "", fixed},
 		{"mux 405 carries the fixed headers", "POST", "/public/echo", "", nil, nil, "", 405, "", fixed},
 		{"auth route keeps its method", "POST", "/auth/login", "", nil, nil, "", 405, "", fixed},
-		{"public strips every credential", "GET", "/public/echo", "", cookie, map[string]string{"Authorization": "Basic Zm9vOmJhcg==", "Proxy-Authorization": "Basic Zm9vOmJhcg=="}, "", 200, `{"authorization":"","cookie":"","hijack":false,"proxy_authorization":""}`, fixed},
+		{"public strips every credential", "GET", "/public/echo", "", cookie, map[string]string{"Authorization": "Basic Zm9vOmJhcg==", "Proxy-Authorization": "Basic Zm9vOmJhcg=="}, "", 200, `{"authorization":"","cookie":"","flush":true,"hijack":false,"proxy_authorization":"","user":""}`, fixed},
 		{"public refuses a bearer credential", "GET", "/public/echo", "", nil, map[string]string{"Authorization": "Bearer " + key}, "", 400, `{"error":"This route is public and takes no credentials; check the path."}`, nil},
 		{"public refuses an upgrade", "GET", "/public/echo", "", nil, map[string]string{"Connection": "Upgrade", "Upgrade": "websocket"}, "", 400, `"error"`, nil},
 		{"public keeps the host check", "GET", "/public/echo", "wrong.example", nil, nil, "", 421, "This application is served at " + app.URL, nil},
-		{"probe serves any host", "GET", "/health", "wrong.example", nil, nil, "", 200, "ok", fixed},
-		{"probe drops a credential silently", "GET", "/health", "", cookie, map[string]string{"Authorization": "Bearer " + token}, "", 200, "ok", nil},
+		{"probe serves any host", "GET", "/health", "wrong.example", nil, nil, "", 200, `"cookie":""`, fixed},
+		{"probe drops a credential silently", "GET", "/health", "", cookie, map[string]string{"Authorization": "Bearer " + token}, "", 200, `{"authorization":"","cookie":"",`, nil},
 		{"public handler replaces no-store", "GET", "/public/cached", "", nil, nil, "", 200, "", map[string]string{"Cache-Control": "max-age=60"}},
 		{"public without cross-origin", "GET", "/public/echo", "", nil, nil, "", 200, "", map[string]string{"Access-Control-Allow-Origin": ""}},
 		{"public with cross-origin", "GET", "/public/shared", "", nil, map[string]string{"Origin": "https://shop.example"}, "", 200, "ok", map[string]string{"Access-Control-Allow-Origin": "*"}},
@@ -153,8 +162,8 @@ func TestRouter(t *testing.T) {
 		{"service with an access token on any host", "GET", "/service", "wrong.example", nil, map[string]string{"Authorization": "Bearer " + token}, "", 200, "ok", fixed},
 		{"service refuses a session", "GET", "/service", "", cookie, nil, "", 401, `"error"`, nil},
 		{"service refuses a key", "GET", "/service", "", nil, map[string]string{"Authorization": "Bearer " + key}, "", 401, `"error"`, nil},
-		{"body over the default limit", "POST", "/private/body", "", cookie, sameOrigin, overDefault, 413, `"error"`, nil},
-		{"route limit raises the default", "POST", "/private/upload", "", cookie, sameOrigin, overDefault, 200, "", nil},
+		{"body over the router's limit", "POST", "/private/body", "", cookie, sameOrigin, overLimit, 413, `"error"`, nil},
+		{"route limit raises the router's", "POST", "/private/upload", "", cookie, sameOrigin, overLimit, 200, "", nil},
 		// Under no-referrer Chrome sends Origin: null on a same-origin form post, which sign-out refuses.
 		{"page sets a same-origin referrer policy", "GET", "/public/echo", "", nil, nil, "", 200, "", map[string]string{"Referrer-Policy": "same-origin"}},
 		{"form sign-out from a page served by the router", "POST", "/auth/logout", "", leaving, map[string]string{"Origin": app.URL, "Sec-Fetch-Site": "same-origin", "Content-Type": "application/x-www-form-urlencoded"}, "", 303, "", map[string]string{"Location": "/"}},
@@ -189,6 +198,14 @@ func TestRouter(t *testing.T) {
 				}
 			}
 		})
+	}
+
+	// An absolute-form request URL's user:password@ never reaches a public handler.
+	withUserinfo := httptest.NewRequest("GET", "http://user:secret@"+mustHost(t, app.URL)+"/public/echo", nil)
+	echoed := httptest.NewRecorder()
+	router.ServeHTTP(echoed, withUserinfo)
+	if echoed.Code != 200 || !strings.Contains(echoed.Body.String(), `"user":""`) {
+		t.Fatalf("userinfo reached the public handler: %d %s", echoed.Code, echoed.Body.String())
 	}
 
 	// A public handler that reads the identity fails loudly instead of answering.

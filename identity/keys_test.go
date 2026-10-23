@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Ovi1kanobe/appkit/api"
 	"github.com/Ovi1kanobe/appkit/authz"
 	"github.com/Ovi1kanobe/appkit/identity"
 	"github.com/Ovi1kanobe/appkit/identity/identitytest"
@@ -221,7 +222,7 @@ func TestIdentityTestKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sessions.Close()
-	router := sessions.Router()
+	router := sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit})
 	router.Private("GET /api/diagnostics", "diagnostics.read", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	app.Config.Handler = router
 	cookie := provider.SignIn(t, app.URL, identitytest.User{Subject: "alice", Groups: []string{"observers"}})

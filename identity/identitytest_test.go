@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Ovi1kanobe/appkit/api"
 	"github.com/Ovi1kanobe/appkit/authz"
 	"github.com/Ovi1kanobe/appkit/identity"
 	"github.com/Ovi1kanobe/appkit/identity/identitytest"
@@ -29,7 +30,7 @@ func TestIdentityTestHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sessions.Close()
-	router := sessions.Router()
+	router := sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit})
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		actor, _ := identity.FromContext(r.Context())
 		_, _ = w.Write([]byte(actor.Subject))
@@ -96,7 +97,7 @@ func TestServiceClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer accountsSessions.Close()
-	router := accountsSessions.Router()
+	router := accountsSessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit})
 	router.Service("GET /api/profiles", "profiles.read", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		caller, _ := identity.FromContext(r.Context())
 		_, _ = w.Write([]byte(caller.Subject))
