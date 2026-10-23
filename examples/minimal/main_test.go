@@ -3,16 +3,20 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
 
 	"github.com/Ovi1kanobe/appkit/encryption"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/api/access"
+	httpapi "github.com/Ovi1kanobe/appkit/examples/minimal/api/http"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/systems/diagnostics"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/systems/email"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/systems/notes"
@@ -64,7 +68,7 @@ func TestRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sessions.Close()
-	pages, err := frontend.New(fstest.MapFS{"index.html": {Data: []byte("app")}})
+	pages, err := frontend.New(fstest.MapFS{"index.html": {Data: []byte("app")}}, frontend.Config{HashedAssets: "assets"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,6 +123,22 @@ func TestRoutes(t *testing.T) {
 		status, body := send(step.cookie, step.method, step.path, step.body)
 		if status != step.status || !strings.Contains(body, step.contains) {
 			t.Fatalf("%s: %d %q, want %d containing %q", step.name, status, body, step.status, step.contains)
+		}
+	}
+	// The public notes route answers anyone, signed out, with exactly the
+	// fields its public read rule lists.
+	if status, _ := send(aliceCookie, "POST", "/api/notes", `{"text":"for everyone"}`); status != 201 {
+		t.Fatalf("seed a public note: %d", status)
+	}
+	status, body := send(nil, "GET", httpapi.PublicNotesPattern[len("GET "):], "")
+	var publicNotes []map[string]any
+	if err := json.Unmarshal([]byte(body), &publicNotes); status != 200 || err != nil || len(publicNotes) == 0 {
+		t.Fatalf("public notes: %d %q %v", status, body, err)
+	}
+	for _, note := range publicNotes {
+		keys := slices.Sorted(maps.Keys(note))
+		if strings.Join(keys, ",") != "created_at,id,text" {
+			t.Fatalf("public note keys %v, want created_at, id, text", keys)
 		}
 	}
 	// A key a member made reaches the routes its scope covers as that member,

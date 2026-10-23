@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Ovi1kanobe/appkit/api"
 	"github.com/Ovi1kanobe/appkit/authz"
 	"github.com/Ovi1kanobe/appkit/config"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/api/access"
@@ -124,7 +123,7 @@ func run(appKit config.AppKit) error {
 	if development {
 		files = os.DirFS("frontend/dist") // make dev rebuilds it on save; refresh the browser
 	}
-	pages, err := frontend.New(files)
+	pages, err := frontend.New(files, frontend.Config{HashedAssets: "assets"})
 	if err != nil {
 		return err
 	}
@@ -176,23 +175,22 @@ func recordProfile(profiles *userprofiles.System) func(*http.Request, identity.I
 	}
 }
 
-// routes mounts every route behind its authentication and permission.
+// routes mounts every route on the router, each line naming its kind and,
+// for a guarded kind, its permission. The frontend is the one public subtree,
+// mounted last.
 func routes(sessions *identity.Sessions, profiles *userprofiles.System, diagnosticSystem *diagnostics.System, noteSystem *notes.System, emailSystem *email.System, hub *realtime.Hub, pages http.Handler) http.Handler {
-	mux := http.NewServeMux()
-	sessions.Routes(mux)
-	mux.Handle(httpapi.HealthPattern, httpapi.Health())
-	mux.Handle(httpapi.StatusPattern, sessions.Bearer(identity.RequirePermission(access.DiagnosticsRead, httpapi.Status(diagnosticSystem))))
-	mux.Handle(httpapi.ListNotesPattern, sessions.Require(identity.RequirePermission(access.NotesRead, httpapi.ListNotes(noteSystem, profiles))))
-	mux.Handle(httpapi.CreateNotePattern, sessions.Require(identity.RequirePermission(access.NotesWrite, httpapi.CreateNote(noteSystem, profiles))))
-	mux.Handle(httpapi.DeleteNotePattern, sessions.Require(identity.RequirePermission(access.NotesWrite, httpapi.DeleteNote(noteSystem))))
-	mux.Handle(httpapi.EmailKeyStatusPattern, sessions.Require(identity.RequirePermission(access.EmailWrite, httpapi.EmailKeyStatus(emailSystem))))
-	mux.Handle(httpapi.SetEmailKeyPattern, sessions.Require(identity.RequirePermission(access.EmailWrite, httpapi.SetEmailKey(emailSystem))))
-	mux.Handle(wsapi.StatusPattern, sessions.Require(identity.RequirePermission(access.DiagnosticsRead, wsapi.Status(diagnosticSystem, hub))))
-	mux.Handle(wsapi.NotesPattern, sessions.Require(identity.RequirePermission(access.NotesRead, wsapi.Notes(hub))))
-	mux.Handle(wsapi.EmailPattern, sessions.Require(identity.RequirePermission(access.EmailWrite, wsapi.Email(hub))))
-	mux.Handle(httpapi.DashboardPattern, sessions.Require(pages))
-	mux.Handle(httpapi.SettingsPattern, sessions.Require(pages))
-	mux.Handle(httpapi.AccountPattern, sessions.Require(pages))
-	mux.Handle(httpapi.FrontendPattern, pages)
-	return api.LimitBodies(api.DefaultBodyLimit, mux)
+	router := sessions.Router()
+	router.Public(httpapi.HealthPattern, httpapi.Health(), identity.PublicOptions{Probe: true})
+	router.Public(httpapi.PublicNotesPattern, httpapi.PublicNotes(noteSystem))
+	router.Service(httpapi.StatusPattern, access.DiagnosticsRead, httpapi.Status(diagnosticSystem))
+	router.Private(httpapi.ListNotesPattern, access.NotesRead, httpapi.ListNotes(noteSystem, profiles))
+	router.Private(httpapi.CreateNotePattern, access.NotesWrite, httpapi.CreateNote(noteSystem, profiles))
+	router.Private(httpapi.DeleteNotePattern, access.NotesWrite, httpapi.DeleteNote(noteSystem))
+	router.Private(httpapi.EmailKeyStatusPattern, access.EmailWrite, httpapi.EmailKeyStatus(emailSystem))
+	router.Private(httpapi.SetEmailKeyPattern, access.EmailWrite, httpapi.SetEmailKey(emailSystem))
+	router.Private(wsapi.StatusPattern, access.DiagnosticsRead, wsapi.Status(diagnosticSystem, hub))
+	router.Private(wsapi.NotesPattern, access.NotesRead, wsapi.Notes(hub))
+	router.Private(wsapi.EmailPattern, access.EmailWrite, wsapi.Email(hub))
+	router.Public(httpapi.FrontendPattern, pages)
+	return router
 }

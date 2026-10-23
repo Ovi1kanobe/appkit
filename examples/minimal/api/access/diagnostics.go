@@ -5,7 +5,7 @@ import (
 	"github.com/Ovi1kanobe/appkit/identity"
 )
 
-// DiagnosticsRead lets a person or bearer client see process status.
+// DiagnosticsRead lets a person or a calling application see process status.
 const DiagnosticsRead = "diagnostics.read"
 
 // ViewStatus returns what viewer sees of the process status: all of it.

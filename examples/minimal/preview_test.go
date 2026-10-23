@@ -85,7 +85,7 @@ func TestPreview(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sessions.Close()
-	pages, err := frontend.New(os.DirFS("frontend/dist"))
+	pages, err := frontend.New(os.DirFS("frontend/dist"), frontend.Config{HashedAssets: "assets"})
 	if err != nil {
 		t.Fatal(err)
 	}

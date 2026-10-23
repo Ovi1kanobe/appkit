@@ -31,6 +31,8 @@ test: frontend
 	cd frontend && bun x biome check
 	@unformatted=$$(gofmt -l $$(find . -name '*.go' -not -path './frontend/*')); \
 	if [ -n "$$unformatted" ]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
+	@mux=$$(git grep --untracked -n -E 'http\.(NewServeMux|ServeMux\{|DefaultServeMux|Handle\(|HandleFunc\()|new\(http\.ServeMux\)|net/http/pprof' -- '*.go' ':!*_test.go'); \
+	if [ -n "$$mux" ]; then echo "mount routes on the AppKit router, never a mux of your own:"; echo "$$mux"; exit 1; fi
 	go vet ./...
 	go test -race ./...
 

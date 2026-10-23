@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Ovi1kanobe/appkit/api"
 	"github.com/Ovi1kanobe/appkit/authz"
 	"github.com/Ovi1kanobe/appkit/config"
 	httpapi "github.com/Ovi1kanobe/appkit/examples/starter/api/http"
@@ -101,7 +100,7 @@ func run(appKit config.AppKit) error {
 	if development {
 		files = os.DirFS("frontend/dist") // make dev rebuilds it on save; refresh the browser
 	}
-	pages, err := frontend.New(files)
+	pages, err := frontend.New(files, frontend.Config{HashedAssets: "assets"})
 	if err != nil {
 		return err
 	}
@@ -151,12 +150,12 @@ func recordProfile(profiles *userprofiles.System) func(*http.Request, identity.I
 	}
 }
 
-// routes mounts every route behind its authentication and permission.
+// routes mounts every route on the router, each line naming its kind and,
+// for a guarded kind, its permission. The frontend is the one public subtree,
+// mounted last.
 func routes(sessions *identity.Sessions, pages http.Handler) http.Handler {
-	mux := http.NewServeMux()
-	sessions.Routes(mux)
-	mux.Handle(httpapi.HealthPattern, httpapi.Health())
-	mux.Handle(httpapi.AccountPattern, sessions.Require(pages))
-	mux.Handle(httpapi.FrontendPattern, pages)
-	return api.LimitBodies(api.DefaultBodyLimit, mux)
+	router := sessions.Router()
+	router.Public(httpapi.HealthPattern, httpapi.Health(), identity.PublicOptions{Probe: true})
+	router.Public(httpapi.FrontendPattern, pages)
+	return router
 }
