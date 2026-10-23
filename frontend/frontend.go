@@ -55,12 +55,11 @@ func New(files fs.FS) (http.Handler, error) {
 			}
 			// Vite names files under /assets by content hash, so they never change.
 			// Everything else, index.html included, is revalidated against its ETag.
+			cacheControl := "no-cache"
 			if first == "assets" {
-				writer.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-			} else {
-				writer.Header().Set("Cache-Control", "no-cache")
+				cacheControl = "public, max-age=31536000, immutable"
 			}
-			serveWithContentETag(writer, request, name, data)
+			serveWithCacheHeaders(writer, request, name, data, cacheControl)
 			return
 		}
 		if !errors.Is(readErr, fs.ErrNotExist) {
@@ -76,19 +75,20 @@ func New(files fs.FS) (http.Handler, error) {
 			return
 		}
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
-		writer.Header().Set("Cache-Control", "no-cache")
 		index, err := fs.ReadFile(files, "index.html")
 		if err != nil {
 			http.Error(writer, "frontend unavailable", http.StatusInternalServerError)
 			return
 		}
-		serveWithContentETag(writer, request, "index.html", index)
+		serveWithCacheHeaders(writer, request, "index.html", index, "no-cache")
 	}), nil
 }
 
-// serveWithContentETag sets an ETag from the content hash, since files carry no
-// modification time, so ServeContent can answer a matching If-None-Match with 304.
-func serveWithContentETag(writer http.ResponseWriter, request *http.Request, name string, data []byte) {
+// serveWithCacheHeaders sets Cache-Control and an ETag from the content hash on
+// every served response; files carry no modification time, so the ETag is what
+// lets ServeContent answer a matching If-None-Match with 304.
+func serveWithCacheHeaders(writer http.ResponseWriter, request *http.Request, name string, data []byte, cacheControl string) {
+	writer.Header().Set("Cache-Control", cacheControl)
 	contentHash := sha256.Sum256(data)
 	// 128 bits of the hash is ample for change detection and keeps the header short.
 	writer.Header().Set("ETag", `"`+hex.EncodeToString(contentHash[:16])+`"`)
