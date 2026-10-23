@@ -90,6 +90,7 @@ func New(files fs.FS) (http.Handler, error) {
 // modification time, so ServeContent can answer a matching If-None-Match with 304.
 func serveWithContentETag(writer http.ResponseWriter, request *http.Request, name string, data []byte) {
 	contentHash := sha256.Sum256(data)
+	// 128 bits of the hash is ample for change detection and keeps the header short.
 	writer.Header().Set("ETag", `"`+hex.EncodeToString(contentHash[:16])+`"`)
 	http.ServeContent(writer, request, name, time.Time{}, bytes.NewReader(data))
 }

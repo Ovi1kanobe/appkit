@@ -58,19 +58,25 @@ func TestFrontend(t *testing.T) {
 			})
 		}
 	}
-	for _, target := range []string{"/", "/bots/123", "/assets/app.js"} {
+	// A 304 carries the same ETag and Cache-Control, and still overrides the route's no-store.
+	for _, test := range []struct {
+		path         string
+		cacheControl string
+	}{{"/", "no-cache"}, {"/bots/123", "no-cache"}, {"/assets/app.js", "public, max-age=31536000, immutable"}} {
 		firstResponse := httptest.NewRecorder()
-		handler.ServeHTTP(firstResponse, httptest.NewRequest("GET", target, nil))
+		routeWithNoStoreDefault.ServeHTTP(firstResponse, httptest.NewRequest("GET", test.path, nil))
 		entityTag := firstResponse.Header().Get("ETag")
 		if entityTag == "" {
-			t.Fatalf("%s sent no ETag", target)
+			t.Fatalf("%s sent no ETag", test.path)
 		}
-		revalidationRequest := httptest.NewRequest("GET", target, nil)
+		revalidationRequest := httptest.NewRequest("GET", test.path, nil)
 		revalidationRequest.Header.Set("If-None-Match", entityTag)
 		revalidationResponse := httptest.NewRecorder()
-		handler.ServeHTTP(revalidationResponse, revalidationRequest)
-		if revalidationResponse.Code != http.StatusNotModified || revalidationResponse.Body.Len() != 0 {
-			t.Fatalf("%s revalidation status=%d body=%q", target, revalidationResponse.Code, revalidationResponse.Body.String())
+		routeWithNoStoreDefault.ServeHTTP(revalidationResponse, revalidationRequest)
+		revalidationEntityTag := revalidationResponse.Header().Get("ETag")
+		revalidationCacheControl := revalidationResponse.Header().Get("Cache-Control")
+		if revalidationResponse.Code != http.StatusNotModified || revalidationResponse.Body.Len() != 0 || revalidationEntityTag != entityTag || revalidationCacheControl != test.cacheControl {
+			t.Fatalf("%s revalidation status=%d body=%q etag=%q cache-control=%q", test.path, revalidationResponse.Code, revalidationResponse.Body.String(), revalidationEntityTag, revalidationCacheControl)
 		}
 	}
 	response := httptest.NewRecorder()
