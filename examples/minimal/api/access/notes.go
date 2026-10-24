@@ -21,19 +21,19 @@ const (
 var ErrNotAuthor = api.Forbidden("Only the author may delete this note.")
 
 // Note lists what a person who reads notes receives of a note: the note, its
-// author's current email, and whether it is theirs.
+// author's current email when the app knows one, and whether it is theirs.
 type Note struct {
 	ID          int64     `json:"id"`
 	Text        string    `json:"text"`
 	CreatedAt   time.Time `json:"created_at"`
-	AuthorEmail string    `json:"author_email"`
+	AuthorEmail string    `json:"author_email,omitempty"`
 	Mine        bool      `json:"mine"`
 }
 
 // ViewNote returns what viewer sees of note, given its author's profile.
 // Everyone who reads notes sees every note. A note a visitor posted through
 // the public route has identity.PublicSubject as its author, who has no
-// profile, so its author email is empty and it is no one's.
+// profile, so its author email is left out and it is no one's.
 func ViewNote(viewer identity.Identity, note notes.Note, author userprofiles.UserProfile) (Note, bool) {
 	return Note{
 		ID:          note.ID,

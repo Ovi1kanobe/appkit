@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"embed"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -35,8 +36,13 @@ type KeyStatus struct {
 	UpdatedAt time.Time
 }
 
-// Change is the key status after it changed.
-type Change struct{ Status KeyStatus }
+// Change is the key status after it changed, with when and by whom, as a
+// subject, it changed.
+type Change struct {
+	Status KeyStatus
+	At     time.Time
+	By     string
+}
 
 type System struct {
 	database *sql.DB
@@ -97,11 +103,12 @@ func (system *System) SetAPIKey(ctx context.Context, actor Actor, apiKey string)
 	if err != nil {
 		return err
 	}
+	slog.Info("email key set", "subject", actor.Subject)
 	status, err := system.KeyStatus(ctx)
 	if err != nil {
 		return err
 	}
-	system.onChange(Change{Status: status})
+	system.onChange(Change{Status: status, At: record.UpdatedAt, By: actor.Subject})
 	return nil
 }
 

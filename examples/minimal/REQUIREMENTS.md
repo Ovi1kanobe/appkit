@@ -18,7 +18,7 @@ A member opens Notes, adds a short note, and sees it in the shared list with eve
     1. Given a signed-in member, when they add a note of 1 to 500 characters, then it appears at the top of every open Notes page.
     2. Given a note by another member, when a member tries to delete it, then the app refuses with 403 and the note stays.
     3. Given an empty note or one over 500 characters, when it is submitted, then the app answers 400 with the sentence the person reads.
-    4. Given a visitor who is not signed in, on a page on any origin, when they post a note of 1 to 500 characters, then the app answers 201 with its `id`, `text`, and `created_at`, and members see it as Anonymous and cannot delete it.
+    4. Given a visitor who is not signed in, on a page on any origin, when they post a note of 1 to 500 characters with a `request_id` they made, then the app answers 201 with its `id`, `text`, and `created_at`, and members see it as Anonymous and cannot delete it; a post without a `request_id` is refused with 400, and a repeat with the same one answers the same note and adds none.
 
 ### 2. Watch the process (P2)
 A member opens the Dashboard and sees how long the process has been running, updating live.
@@ -49,9 +49,9 @@ An admin enters the email provider's API key once on Settings and sees that it i
 - FR-006: A visitor who is not signed in must be able to add a note of 1 to 500 characters from a page on any origin, at most 5 a minute per address.
 
 ## Key entities
-- Note: text, author by subject, created time; belongs to one person; a note a visitor posted belongs to the public subject, and no member may delete it.
-- Profile: a signed-in person's subject and email, recorded at every session request.
-- Email settings: one row holding the encrypted API key.
+- Note: text, author by subject, created time; belongs to one person; a note a visitor posted belongs to the public subject, and no member may delete it; history kept: no, because a note is never edited, only added and removed, and nobody needs a removed note back.
+- Profile: a signed-in person's subject and email, recorded at every session request; history kept: no, because it mirrors the identity provider's current email, which keeps its own history.
+- Email settings: one row holding the encrypted API key; history kept: no, because only the current key is ever used, and a replaced key must not be kept.
 
 ## Success criteria
 - SC-001: Every rule in APPS.md has at least one line of this app that shows it.
@@ -108,7 +108,7 @@ An admin enters the email provider's API key once on Settings and sees that it i
 | Route | Accepts | Fields | Who calls it and why |
 | --- | --- | --- | --- |
 | `GET /api/notes/public` | | `id`, `text`, `created_at` | An office wall display, which shows the latest notes without anyone signing in |
-| `POST /api/notes/public` | `text` | `id`, `text`, `created_at` | A visitor page on any origin, which lets someone who is not signed in leave a note |
+| `POST /api/notes/public` | `text`, `request_id` | `id`, `text`, `created_at` | A visitor page on any origin, which lets someone who is not signed in leave a note |
 
 ## Decisions
 - Status is also served to calling apps at `/api/status`, instead of a separate monitoring app, because the example must show a service route.

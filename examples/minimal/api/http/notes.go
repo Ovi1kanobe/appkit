@@ -50,18 +50,19 @@ func ListNotes(system *notes.System, profiles *userprofiles.System) http.Handler
 	})
 }
 
-// CreateNote adds a note from {"text"}. Mount it behind access.NotesWrite.
+// CreateNote adds a note from {"text", "request_id"}. Mount it behind access.NotesWrite.
 func CreateNote(system *notes.System, profiles *userprofiles.System) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		var input struct {
-			Text string `json:"text"`
+			Text      string `json:"text"`
+			RequestID string `json:"request_id"`
 		}
 		if err := api.ReadJSON(request, &input); err != nil {
 			api.WriteError(writer, request, err)
 			return
 		}
 		person := viewer(request)
-		note, err := system.Create(request.Context(), notes.Actor{Subject: person.Subject}, input.Text)
+		note, err := system.Create(request.Context(), notes.Actor{Subject: person.Subject}, input.RequestID, input.Text)
 		if err != nil {
 			api.WriteError(writer, request, err)
 			return
@@ -89,11 +90,12 @@ func DeleteNote(system *notes.System) http.Handler {
 			api.WriteError(writer, request, err)
 			return
 		}
-		if !access.CanDeleteNote(viewer(request), note) {
+		person := viewer(request)
+		if !access.CanDeleteNote(person, note) {
 			api.WriteError(writer, request, access.ErrNotAuthor)
 			return
 		}
-		if err := system.Delete(request.Context(), id); err != nil {
+		if err := system.Delete(request.Context(), notes.Actor{Subject: person.Subject}, id); err != nil {
 			api.WriteError(writer, request, err)
 			return
 		}

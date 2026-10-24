@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 
@@ -34,6 +36,10 @@ import (
 // real routes, permissions, and ownership rules.
 func TestRoutes(t *testing.T) {
 	ctx := context.Background()
+	logged := &capturedLog{}
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(logged))
+	defer slog.SetDefault(previousLogger)
 	provider := identitytest.NewProvider(t)
 	app := httptest.NewServer(nil)
 	defer app.Close()
@@ -50,7 +56,13 @@ func TestRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	noteSystem, err := notes.Open(ctx, database, func(notes.Change) {})
+	var noteChangesLock sync.Mutex
+	var noteChanges []notes.Change
+	noteSystem, err := notes.Open(ctx, database, func(change notes.Change) {
+		noteChangesLock.Lock()
+		defer noteChangesLock.Unlock()
+		noteChanges = append(noteChanges, change)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,8 +124,9 @@ func TestRoutes(t *testing.T) {
 		{"signed out", nil, "GET", "/api/notes", "", 401, `{"error":"Sign in required."}`},
 		{"no permission", adminCookie, "GET", "/api/notes", "", 403, `"error"`},
 		{"session records the profile", aliceCookie, "GET", "/auth/session", "", 200, `"alice@example.test"`},
-		{"create", aliceCookie, "POST", "/api/notes", `{"text":"hello"}`, 201, `"author_email":"alice@example.test"`},
-		{"invalid", aliceCookie, "POST", "/api/notes", `{"text":" "}`, 400, `"error"`},
+		{"create", aliceCookie, "POST", "/api/notes", `{"text":"hello","request_id":"create-hello"}`, 201, `"author_email":"alice@example.test"`},
+		{"request id of another", bobCookie, "POST", "/api/notes", `{"text":"hello","request_id":"create-hello"}`, 409, `{"error":"That request_id was already used for another create."}`},
+		{"invalid", aliceCookie, "POST", "/api/notes", `{"text":" ","request_id":"create-blank"}`, 400, `"error"`},
 		{"other reader", bobCookie, "GET", "/api/notes", "", 200, `"mine":false`},
 		{"not owner", bobCookie, "DELETE", "/api/notes/1", "", 403, `"error"`},
 		{"owner deletes", aliceCookie, "DELETE", "/api/notes/1", "", 204, ""},
@@ -126,6 +139,28 @@ func TestRoutes(t *testing.T) {
 		if status != step.status || !strings.Contains(body, step.contains) {
 			t.Fatalf("%s: %d %q, want %d containing %q", step.name, status, body, step.status, step.contains)
 		}
+	}
+	// Each change says when and by whom: alice created note 1, then deleted it.
+	noteChangesLock.Lock()
+	changes := slices.Clone(noteChanges)
+	noteChangesLock.Unlock()
+	if len(changes) != 2 || changes[0].Note == nil || changes[0].By != "alice" || changes[0].At.IsZero() || changes[1].Note != nil || changes[1].By != "alice" || changes[1].At.IsZero() {
+		t.Fatalf("note changes %+v, want alice's create and delete, dated", changes)
+	}
+	if lines := logged.matching("INFO note "); !slices.Equal(lines, []string{"INFO note created subject=alice note=1", "INFO note deleted subject=alice note=1"}) {
+		t.Fatalf("logged %q, want one line per note change with the subject and the note's id", lines)
+	}
+	// A create repeated with its request_id answers the note the first made, and makes no second.
+	firstStatus, firstBody := send(aliceCookie, "POST", "/api/notes", `{"text":"once","request_id":"create-once"}`)
+	repeatStatus, repeatBody := send(aliceCookie, "POST", "/api/notes", `{"text":"once","request_id":"create-once"}`)
+	if _, listBody := send(aliceCookie, "GET", "/api/notes", ""); firstStatus != 201 || repeatStatus != 201 || repeatBody != firstBody || strings.Count(listBody, `"text":"once"`) != 1 {
+		t.Fatalf("repeated create: %d %q, then %d %q, list %q", firstStatus, firstBody, repeatStatus, repeatBody, listBody)
+	}
+	noteChangesLock.Lock()
+	changeCount := len(noteChanges)
+	noteChangesLock.Unlock()
+	if createdLines := logged.matching("INFO note created"); changeCount != 3 || len(createdLines) != 2 {
+		t.Fatalf("repeated create: %d note changes and created lines %q, want 3 changes and one line each for hello and once", changeCount, createdLines)
 	}
 	// Health answers a probe that reaches the app by address, and a page is the
 	// shell, revalidated against its ETag.
@@ -147,7 +182,7 @@ func TestRoutes(t *testing.T) {
 	}
 	// The public notes route answers anyone, signed out, with exactly the
 	// fields its public read rule lists.
-	if status, _ := send(aliceCookie, "POST", "/api/notes", `{"text":"for everyone"}`); status != 201 {
+	if status, _ := send(aliceCookie, "POST", "/api/notes", `{"text":"for everyone","request_id":"create-for-everyone"}`); status != 201 {
 		t.Fatalf("seed a public note: %d", status)
 	}
 	status, body := send(nil, "GET", httpapi.PublicNotesPattern[len("GET "):], "")
@@ -188,7 +223,7 @@ func TestRoutes(t *testing.T) {
 		data, _ := io.ReadAll(response.Body)
 		return response.StatusCode, response.Header, string(data)
 	}
-	status, header, body := visitor("POST", "application/json", `{"text":"from a visitor"}`)
+	status, header, body := visitor("POST", "application/json", `{"text":"from a visitor","request_id":"visit-1"}`)
 	var visitorNote map[string]any
 	if err := json.Unmarshal([]byte(body), &visitorNote); status != 201 || err != nil || header.Get("Access-Control-Allow-Origin") != "*" {
 		t.Fatalf("visitor note: %d %q %v %v", status, body, err, header)
@@ -200,31 +235,38 @@ func TestRoutes(t *testing.T) {
 	if note, err := noteSystem.Get(ctx, visitorNoteID); err != nil || note.CreatedBy != identity.PublicSubject {
 		t.Fatalf("visitor note author: %+v %v", note, err)
 	}
+	// The app knows no email for the public subject, so the field is left out, not sent empty.
 	_, body = send(aliceCookie, "GET", "/api/notes", "")
-	var memberNotes []access.Note
+	var memberNotes []map[string]any
 	if err := json.Unmarshal([]byte(body), &memberNotes); err != nil {
 		t.Fatalf("notes as alice: %q %v", body, err)
 	}
-	seen := slices.IndexFunc(memberNotes, func(note access.Note) bool { return note.ID == visitorNoteID })
-	if seen < 0 || memberNotes[seen].AuthorEmail != "" || memberNotes[seen].Mine {
+	seen := slices.IndexFunc(memberNotes, func(note map[string]any) bool { return note["id"] == float64(visitorNoteID) })
+	if seen < 0 {
+		t.Fatalf("visitor note missing for alice: %s", body)
+	}
+	if _, hasAuthorEmail := memberNotes[seen]["author_email"]; hasAuthorEmail || memberNotes[seen]["mine"] != false {
 		t.Fatalf("visitor note as alice: %s", body)
 	}
 	if status, _ := send(aliceCookie, "DELETE", fmt.Sprintf("/api/notes/%d", visitorNoteID), ""); status != 403 {
 		t.Fatalf("alice deleted the visitor note: %d", status)
 	}
-	if status, _, body := visitor("POST", "", `{"text":"no content type"}`); status != 415 || body != `{"error":"Send JSON with Content-Type: application/json."}`+"\n" {
+	if status, _, body := visitor("POST", "", `{"text":"no content type","request_id":"visit-no-content-type"}`); status != 415 || body != `{"error":"Send JSON with Content-Type: application/json."}`+"\n" {
 		t.Fatalf("visitor note without the JSON content type: %d %q", status, body)
 	}
 	if status, header, _ := visitor("OPTIONS", "", ""); status != 204 || header.Get("Access-Control-Allow-Methods") != "GET, HEAD, POST" || header.Get("Access-Control-Allow-Headers") != "Content-Type" {
 		t.Fatalf("visitor preflight: %d %v", status, header)
 	}
-	// From three: the 415 above spent a token, since the limiter runs before the content type check.
-	for count := 3; count <= 5; count++ {
-		if status, _, body := visitor("POST", "application/json", `{"text":"again"}`); status != 201 {
+	if status, _, body := visitor("POST", "application/json", `{"text":"no request id"}`); status != 400 || body != `{"error":"A create needs a request_id."}`+"\n" {
+		t.Fatalf("visitor note without a request_id: %d %q", status, body)
+	}
+	// From four: the 415 and the 400 above each spent a token, since the limiter runs first.
+	for count := 4; count <= 5; count++ {
+		if status, _, body := visitor("POST", "application/json", fmt.Sprintf(`{"text":"again","request_id":"visit-%d"}`, count)); status != 201 {
 			t.Fatalf("visitor note %d: %d %q", count, status, body)
 		}
 	}
-	if status, header, _ := visitor("POST", "application/json", `{"text":"one too many"}`); status != 429 || header.Get("Retry-After") == "" {
+	if status, header, _ := visitor("POST", "application/json", `{"text":"one too many","request_id":"visit-one-too-many"}`); status != 429 || header.Get("Retry-After") == "" {
 		t.Fatalf("sixth visitor note in a minute: %d %v", status, header)
 	}
 	// A key a member made reaches the routes its scope covers as that member,
@@ -232,7 +274,7 @@ func TestRoutes(t *testing.T) {
 	keyID, secret := provider.CreateKey(t, app.URL, aliceCookie, "ci", access.NotesRead)
 	withKey := func(method, path string) int {
 		t.Helper()
-		request, _ := http.NewRequest(method, app.URL+path, strings.NewReader(`{"text":"by key"}`))
+		request, _ := http.NewRequest(method, app.URL+path, strings.NewReader(`{"text":"by key","request_id":"create-by-key"}`))
 		request.Header.Set("Authorization", "Bearer "+secret)
 		request.Header.Set("Content-Type", "application/json")
 		response, err := http.DefaultClient.Do(request)
@@ -288,4 +330,42 @@ func remoteClientAddress(t testing.TB) func(*http.Request) string {
 		t.Fatal(err)
 	}
 	return clientAddress
+}
+
+// capturedLog is a slog handler that keeps each record as its level, message,
+// and attributes on one line, so a test can check what a change logged.
+type capturedLog struct {
+	lock  sync.Mutex
+	lines []string
+}
+
+func (captured *capturedLog) Enabled(context.Context, slog.Level) bool { return true }
+
+func (captured *capturedLog) Handle(_ context.Context, record slog.Record) error {
+	line := record.Level.String() + " " + record.Message
+	record.Attrs(func(attribute slog.Attr) bool {
+		line += " " + attribute.String()
+		return true
+	})
+	captured.lock.Lock()
+	defer captured.lock.Unlock()
+	captured.lines = append(captured.lines, line)
+	return nil
+}
+
+func (captured *capturedLog) WithAttrs([]slog.Attr) slog.Handler { return captured }
+
+func (captured *capturedLog) WithGroup(string) slog.Handler { return captured }
+
+// matching returns the captured lines that start with prefix.
+func (captured *capturedLog) matching(prefix string) []string {
+	captured.lock.Lock()
+	defer captured.lock.Unlock()
+	var matched []string
+	for _, line := range captured.lines {
+		if strings.HasPrefix(line, prefix) {
+			matched = append(matched, line)
+		}
+	}
+	return matched
 }
