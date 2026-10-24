@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"time"
 
 	"github.com/Ovi1kanobe/appkit/examples/minimal/api/access"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/systems/diagnostics"
@@ -14,10 +13,12 @@ import (
 )
 
 const StatusPattern = "GET /ws/status"
-const StatusTopic = "status.updated"
+const DiagnosticsTopic = "diagnostics.changed"
 
-// Status sends the page the viewer's snapshot when it opens, then the one
-// PublishStatus sends every five seconds. Mount it behind access.DiagnosticsRead.
+// Status subscribes the page to status changes and sends it the viewer's
+// snapshot first, right after Ready, because no HTTP route serves the status
+// to a page and the next timed report is up to five seconds away. Mount it
+// behind access.DiagnosticsRead.
 func Status(system *diagnostics.System, hub *realtime.Hub) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		connection, err := hub.Accept(writer, request)
@@ -25,7 +26,7 @@ func Status(system *diagnostics.System, hub *realtime.Hub) http.Handler {
 			return
 		}
 		defer connection.Close()
-		if err := connection.Subscribe(StatusTopic); err != nil {
+		if err := connection.Subscribe(DiagnosticsTopic); err != nil {
 			return
 		}
 		if connection.Write(request.Context(), []byte(realtime.Ready)) != nil {
@@ -40,28 +41,19 @@ func Status(system *diagnostics.System, hub *realtime.Hub) http.Handler {
 	})
 }
 
-// PublishStatus sends each subscriber their view of the diagnostics snapshot
-// every five seconds until ctx ends.
-func PublishStatus(ctx context.Context, hub *realtime.Hub, system *diagnostics.System) {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			snapshot := system.Snapshot()
-			publishEach(ctx, hub, StatusTopic, func(person identity.Identity) ([]byte, bool) {
-				view, ok := access.ViewStatus(person, snapshot)
+// NewDiagnosticsPublisher sends each subscriber their view of the status after
+// every timed report. There is one status, so every change has the same key
+// and only the latest is sent. Pass Add as the diagnostics system's onChange,
+// and start Run in a goroutine.
+func NewDiagnosticsPublisher(hub *realtime.Hub) *realtime.Publisher[struct{}, diagnostics.Change] {
+	return realtime.NewPublisher(hub, DiagnosticsTopic,
+		func(diagnostics.Change) struct{} { return struct{}{} },
+		func(_ context.Context, change diagnostics.Change) (realtime.View, error) {
+			return func(person identity.Identity) ([]byte, bool) {
+				view, ok := access.ViewStatus(person, change.Status)
 				return marshal(view, ok)
-			})
-		}
-	}
-}
-
-// publishEach sends each subscriber of topic what view returns for them.
-func publishEach(ctx context.Context, hub *realtime.Hub, topic string, view realtime.View) {
-	_ = hub.PublishEach(ctx, topic, view)
+			}, nil
+		})
 }
 
 // marshal encodes value for a subscriber who may see it.

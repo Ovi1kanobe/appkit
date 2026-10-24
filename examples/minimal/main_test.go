@@ -16,11 +16,13 @@ import (
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/Ovi1kanobe/appkit/config"
 	"github.com/Ovi1kanobe/appkit/encryption"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/api/access"
 	httpapi "github.com/Ovi1kanobe/appkit/examples/minimal/api/http"
+	wsapi "github.com/Ovi1kanobe/appkit/examples/minimal/api/websocket"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/systems/diagnostics"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/systems/email"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/systems/notes"
@@ -30,6 +32,7 @@ import (
 	"github.com/Ovi1kanobe/appkit/identity/identitytest"
 	"github.com/Ovi1kanobe/appkit/realtime"
 	"github.com/Ovi1kanobe/appkit/schema"
+	"github.com/coder/websocket"
 )
 
 // TestRoutes signs users in against a local fake Rauthy and exercises the
@@ -88,7 +91,12 @@ func TestRoutes(t *testing.T) {
 	}
 	hub := &realtime.Hub{}
 	defer hub.Close()
-	app.Config.Handler = routes(sessions, remoteClientAddress(t), profiles, diagnostics.New(), noteSystem, emailSystem, hub, pages)
+	publishing, stopPublishing := context.WithCancel(ctx)
+	defer stopPublishing()
+	diagnosticsPublisher := wsapi.NewDiagnosticsPublisher(hub)
+	go diagnosticsPublisher.Run(publishing)
+	diagnosticSystem := diagnostics.New(diagnosticsPublisher.Add)
+	app.Config.Handler = routes(sessions, remoteClientAddress(t), profiles, diagnosticSystem, noteSystem, emailSystem, hub, pages)
 
 	alice := identitytest.User{Subject: "alice", Email: "alice@example.test", Groups: []string{memberGroup}}
 	aliceCookie := provider.SignIn(t, app.URL, alice)
@@ -318,6 +326,36 @@ func TestRoutes(t *testing.T) {
 		if response.StatusCode != step.status {
 			t.Fatalf("bearer %s: %d, want %d", step.name, response.StatusCode, step.status)
 		}
+	}
+
+	// The status socket says it is ready, sends the viewer's snapshot at once,
+	// and then every status the diagnostics system reports.
+	socketContext, cancelSocket := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelSocket()
+	socket, _, err := websocket.Dial(socketContext, "ws"+strings.TrimPrefix(app.URL, "http")+"/ws/status", &websocket.DialOptions{
+		HTTPHeader: http.Header{"Origin": {app.URL}, "Cookie": {aliceCookie.Name + "=" + aliceCookie.Value}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer socket.CloseNow()
+	read := func() string {
+		t.Helper()
+		_, data, err := socket.Read(socketContext)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	if message := read(); message != realtime.Ready {
+		t.Fatalf("first socket message: %q, want ready", message)
+	}
+	if message := read(); !strings.HasPrefix(message, `{"uptime_seconds":`) {
+		t.Fatalf("snapshot after ready: %q", message)
+	}
+	diagnosticsPublisher.Add(diagnostics.Change{Status: diagnostics.Status{UptimeSeconds: 42}, At: time.Now(), By: "diagnostics"})
+	if message := read(); message != `{"uptime_seconds":42}` {
+		t.Fatalf("reported status: %q", message)
 	}
 }
 
