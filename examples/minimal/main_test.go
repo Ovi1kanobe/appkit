@@ -200,13 +200,17 @@ func TestRoutes(t *testing.T) {
 	if note, err := noteSystem.Get(ctx, visitorNoteID); err != nil || note.CreatedBy != identity.PublicSubject {
 		t.Fatalf("visitor note author: %+v %v", note, err)
 	}
+	// The app knows no email for the public subject, so the field is left out, not sent empty.
 	_, body = send(aliceCookie, "GET", "/api/notes", "")
-	var memberNotes []access.Note
+	var memberNotes []map[string]any
 	if err := json.Unmarshal([]byte(body), &memberNotes); err != nil {
 		t.Fatalf("notes as alice: %q %v", body, err)
 	}
-	seen := slices.IndexFunc(memberNotes, func(note access.Note) bool { return note.ID == visitorNoteID })
-	if seen < 0 || memberNotes[seen].AuthorEmail != "" || memberNotes[seen].Mine {
+	seen := slices.IndexFunc(memberNotes, func(note map[string]any) bool { return note["id"] == float64(visitorNoteID) })
+	if seen < 0 {
+		t.Fatalf("visitor note missing for alice: %s", body)
+	}
+	if _, hasAuthorEmail := memberNotes[seen]["author_email"]; hasAuthorEmail || memberNotes[seen]["mine"] != false {
 		t.Fatalf("visitor note as alice: %s", body)
 	}
 	if status, _ := send(aliceCookie, "DELETE", fmt.Sprintf("/api/notes/%d", visitorNoteID), ""); status != 403 {

@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query"
 
 import { api } from "@/lib/api"
 
-export type Note = { id: number; text: string; author_email: string; mine: boolean; created_at: string }
+export type Note = { id: number; text: string; author_email?: string; mine: boolean; created_at: string }
 export type KeyStatus = { set: boolean; last_four?: string; updated_at?: string }
 // An API key the person made. permissions is what it gets now; fewer than its scopes means it was narrowed.
 export type ApiKey = {
