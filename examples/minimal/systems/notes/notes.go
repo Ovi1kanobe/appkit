@@ -22,9 +22,8 @@ var (
 
 const maximumLength = 500
 
-// Actor is who creates a note, recorded as its author by subject: a person,
-// or the public subject the transport passes for a visitor who is not signed
-// in.
+// Actor is who creates or deletes a note, recorded by subject: a person, or
+// the public subject the transport passes for a visitor who is not signed in.
 type Actor struct{ Subject string }
 
 type Note struct {
@@ -34,10 +33,13 @@ type Note struct {
 	CreatedAt time.Time
 }
 
-// Change is a created note, or a deleted note's ID with Note nil.
+// Change is a created note, or a deleted note's ID with Note nil, with when
+// and by whom, as a subject, it changed.
 type Change struct {
 	ID   int64
 	Note *Note
+	At   time.Time
+	By   string
 }
 
 type System struct {
@@ -109,7 +111,7 @@ func (system *System) Create(ctx context.Context, actor Actor, text string) (Not
 	if note.ID, err = result.LastInsertId(); err != nil {
 		return Note{}, err
 	}
-	system.onChange(Change{ID: note.ID, Note: &note})
+	system.onChange(Change{ID: note.ID, Note: &note, At: note.CreatedAt, By: actor.Subject})
 	return note, nil
 }
 
@@ -130,7 +132,8 @@ func (system *System) Get(ctx context.Context, id int64) (Note, error) {
 }
 
 // Delete removes a note.
-func (system *System) Delete(ctx context.Context, id int64) error {
+func (system *System) Delete(ctx context.Context, actor Actor, id int64) error {
+	now := time.Now()
 	result, err := system.database.ExecContext(ctx, `DELETE FROM notes WHERE id = ?`, id)
 	if err != nil {
 		return err
@@ -138,6 +141,6 @@ func (system *System) Delete(ctx context.Context, id int64) error {
 	if removed, err := result.RowsAffected(); err != nil || removed == 0 {
 		return ErrNotFound
 	}
-	system.onChange(Change{ID: id})
+	system.onChange(Change{ID: id, At: now.UTC().Truncate(time.Second), By: actor.Subject})
 	return nil
 }

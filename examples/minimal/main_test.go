@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 
@@ -50,7 +51,13 @@ func TestRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	noteSystem, err := notes.Open(ctx, database, func(notes.Change) {})
+	var noteChangesLock sync.Mutex
+	var noteChanges []notes.Change
+	noteSystem, err := notes.Open(ctx, database, func(change notes.Change) {
+		noteChangesLock.Lock()
+		defer noteChangesLock.Unlock()
+		noteChanges = append(noteChanges, change)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,6 +133,13 @@ func TestRoutes(t *testing.T) {
 		if status != step.status || !strings.Contains(body, step.contains) {
 			t.Fatalf("%s: %d %q, want %d containing %q", step.name, status, body, step.status, step.contains)
 		}
+	}
+	// Each change says when and by whom: alice created note 1, then deleted it.
+	noteChangesLock.Lock()
+	changes := slices.Clone(noteChanges)
+	noteChangesLock.Unlock()
+	if len(changes) != 2 || changes[0].Note == nil || changes[0].By != "alice" || changes[0].At.IsZero() || changes[1].Note != nil || changes[1].By != "alice" || changes[1].At.IsZero() {
+		t.Fatalf("note changes %+v, want alice's create and delete, dated", changes)
 	}
 	// Health answers a probe that reaches the app by address, and a page is the
 	// shell, revalidated against its ETag.

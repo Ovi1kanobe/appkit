@@ -89,11 +89,12 @@ func DeleteNote(system *notes.System) http.Handler {
 			api.WriteError(writer, request, err)
 			return
 		}
-		if !access.CanDeleteNote(viewer(request), note) {
+		person := viewer(request)
+		if !access.CanDeleteNote(person, note) {
 			api.WriteError(writer, request, access.ErrNotAuthor)
 			return
 		}
-		if err := system.Delete(request.Context(), id); err != nil {
+		if err := system.Delete(request.Context(), notes.Actor{Subject: person.Subject}, id); err != nil {
 			api.WriteError(writer, request, err)
 			return
 		}

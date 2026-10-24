@@ -26,7 +26,8 @@ func TestAPIKeyIsStoredEncrypted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	system, err := Open(ctx, database, key, func(Change) {})
+	var changes []Change
+	system, err := Open(ctx, database, key, func(change Change) { changes = append(changes, change) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,5 +47,8 @@ func TestAPIKeyIsStoredEncrypted(t *testing.T) {
 	}
 	if apiKey, err := system.apiKey(ctx); err != nil || apiKey != "re_live_1234abcd" {
 		t.Fatalf("apiKey = %q, %v", apiKey, err)
+	}
+	if len(changes) != 1 || changes[0].By != "admin" || !changes[0].At.Equal(status.UpdatedAt) {
+		t.Fatalf("changes = %+v, want one by admin at %v", changes, status.UpdatedAt)
 	}
 }
