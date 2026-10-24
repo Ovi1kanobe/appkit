@@ -1,17 +1,20 @@
 # AppKit example requirements
 
 ## Summary
-A small reference app for AppKit: shared notes, live process status, and one stored credential.
+A small reference app for AppKit: shared notes, live process status, and one stored API key.
 It is used by AppKit developers to see every rule working.
 
+## Situation
+Every AppKit app is built by an agent from `APPS.md`, `BUILD.md`, and `FRONTEND.md`, which name shapes such as a publisher, a socket, and a view type in prose.
+The apps that have shipped each differ, so an agent checking a rule reads the prose and picks among them, and each new app is the first test of a rule.
+
 ## Problem
-AppKit developers need one small app that exercises every rule in APPS.md, so a rule can be checked against running code instead of prose.
-Without it, each new app is the first test of the rules.
+A rule has to be checkable against running code; prose cannot run, and the shipped apps are too large and too different from each other to hold one rule against.
 
 ## User stories
 
 ### 1. Share a note (P1)
-A member opens Notes, adds a short note, and sees it in the shared list with everyone else's; the author, and only the author, removes it later.
+A member opens Notes, adds a short note, and sees it in the shared list with everyone else's; the author, and only the author, deletes it later.
 - Why this priority: it is the smallest complete path through a system, its routes, access rules, a page, and live updates.
 - Independent test: sign in as two members, add a note as one, see it appear for the other without a refresh, and delete it as its author only.
 - Acceptance scenarios:
@@ -30,7 +33,7 @@ A member opens the Dashboard and sees how long the process has been running, upd
 
 ### 3. Set the email key (P3)
 An admin enters the email provider's API key once on Settings and sees that it is set and its last four characters, never the key itself.
-- Why this priority: it shows a stored credential, encryption, and a write-only field.
+- Why this priority: it shows a stored API key, encryption, and a write-only field.
 - Independent test: set a key as admin, reload, see "set" and the last four characters; a member cannot open Settings.
 - Acceptance scenarios:
     1. Given a signed-in admin, when they save a key, then the page shows it is set and its last four characters.
@@ -49,9 +52,9 @@ An admin enters the email provider's API key once on Settings and sees that it i
 - FR-006: A visitor who is not signed in must be able to add a note of 1 to 500 characters from a page on any origin, at most 5 a minute per address.
 
 ## Key entities
-- Note: text, author by subject, created time; belongs to one person; a note a visitor posted belongs to the public subject, and no member may delete it; history kept: no, because a note is never edited, only added and removed, and nobody needs a removed note back.
+- Note: text, author by subject, created time; belongs to one person; a note a visitor posted belongs to the public subject, and no member may delete it; history kept: no, because a note is never edited, only added and deleted, and nobody needs a deleted note back.
 - Profile: a signed-in person's subject and email, recorded at every session request; history kept: no, because it mirrors the identity provider's current email, which keeps its own history.
-- Email settings: one row holding the encrypted API key; history kept: no, because only the current key is ever used, and a replaced key must not be kept.
+- API key: the email provider's key, one row stored encrypted; history kept: no, because only the current key is ever used, and a replaced key must not be kept.
 
 ## Success criteria
 - SC-001: Every rule in APPS.md has at least one line of this app that shows it.
