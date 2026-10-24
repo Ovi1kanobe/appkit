@@ -3,7 +3,9 @@
 // Invalid, Forbidden, NotFound, Conflict, or Unavailable, whose text is the
 // sentence the person reads. WriteError sends that sentence with the matching
 // status, and any other error as a logged 500 with a generic message, so no
-// internal detail reaches a browser.
+// internal detail reaches a browser. ReadJSON's own errors answer 415 for a
+// request that does not say its body is JSON, 400 for a body that is not
+// valid JSON, and 413 for one over its limit.
 package api
 
 import (
@@ -47,7 +49,8 @@ func Unavailable(text string) error {
 var ErrNotJSON = Invalid("The request body is not valid JSON.")
 
 // ErrNotJSONContentType is the answer, with 415, when a request does not say
-// its body is JSON.
+// its body is JSON. It builds the status error directly on purpose, since no
+// exported constructor makes a 415.
 var ErrNotJSONContentType error = &statusError{status: http.StatusUnsupportedMediaType, text: "Send JSON with Content-Type: application/json."}
 
 // ReadJSON decodes the request body into value: one JSON value and nothing
