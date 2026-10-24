@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// This test calls the logic function with fabricated values.
+// These tests call the system's logic functions with fabricated values and open no database.
 
 func TestStatusAtCountsWholeSeconds(t *testing.T) {
 	started := time.Date(2026, time.March, 4, 10, 0, 0, 0, time.UTC)

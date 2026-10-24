@@ -102,7 +102,7 @@ func (system *System) Create(ctx context.Context, actor Actor, text string) (Not
 	note := newNote(actor, text, time.Now())
 	created := note.CreatedAt.Format(time.RFC3339)
 	result, err := system.database.ExecContext(ctx, `INSERT INTO notes (text, created_by, created_at, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)`,
-		note.Text, actor.Subject, created, actor.Subject, created)
+		note.Text, note.CreatedBy, created, note.CreatedBy, created)
 	if err != nil {
 		return Note{}, err
 	}

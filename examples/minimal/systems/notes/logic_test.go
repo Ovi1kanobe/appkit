@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// These tests call the logic functions with fabricated values and open no database.
+// These tests call the system's logic functions with fabricated values and open no database.
 
 func TestValidText(t *testing.T) {
 	for _, refused := range []string{"", "   ", "\t\n", strings.Repeat("é", maximumLength+1)} {

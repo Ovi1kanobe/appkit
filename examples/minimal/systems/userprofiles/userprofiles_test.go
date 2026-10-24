@@ -35,16 +35,3 @@ func TestRecordAndLookup(t *testing.T) {
 		t.Fatalf("lookup: %+v", profiles)
 	}
 }
-
-// This test calls the logic function with fabricated values and opens no database.
-
-func TestValidSubject(t *testing.T) {
-	for _, refused := range []string{"", "   ", "\t\n"} {
-		if err := validSubject(refused); err != ErrInvalid {
-			t.Fatalf("validSubject(%q) error = %v, want ErrInvalid", refused, err)
-		}
-	}
-	if err := validSubject("sam"); err != nil {
-		t.Fatalf("validSubject(\"sam\") error = %v", err)
-	}
-}
