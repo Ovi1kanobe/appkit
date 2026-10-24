@@ -20,12 +20,14 @@ const (
 
 var ErrNotAuthor = api.Forbidden("Only the author may delete this note.")
 
-// Note is what a person sees of a note: the note, its author's current email,
-// and whether it is theirs.
+// Note lists what a person who reads notes receives of a note: the note, its
+// author's current email, and whether it is theirs.
 type Note struct {
-	notes.Note
-	AuthorEmail string `json:"author_email"`
-	Mine        bool   `json:"mine"`
+	ID          int64     `json:"id"`
+	Text        string    `json:"text"`
+	CreatedAt   time.Time `json:"created_at"`
+	AuthorEmail string    `json:"author_email"`
+	Mine        bool      `json:"mine"`
 }
 
 // ViewNote returns what viewer sees of note, given its author's profile.
@@ -33,7 +35,13 @@ type Note struct {
 // the public route has identity.PublicSubject as its author, who has no
 // profile, so its author email is empty and it is no one's.
 func ViewNote(viewer identity.Identity, note notes.Note, author userprofiles.UserProfile) (Note, bool) {
-	return Note{Note: note, AuthorEmail: author.Email, Mine: note.CreatedBy == viewer.Subject}, true
+	return Note{
+		ID:          note.ID,
+		Text:        note.Text,
+		CreatedAt:   note.CreatedAt,
+		AuthorEmail: author.Email,
+		Mine:        note.CreatedBy == viewer.Subject,
+	}, true
 }
 
 // PublicNote is what anyone sees of a note, signed in or not: its text and
