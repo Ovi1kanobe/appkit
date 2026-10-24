@@ -125,6 +125,7 @@ func TestRoutes(t *testing.T) {
 		{"no permission", adminCookie, "GET", "/api/notes", "", 403, `"error"`},
 		{"session records the profile", aliceCookie, "GET", "/auth/session", "", 200, `"alice@example.test"`},
 		{"create", aliceCookie, "POST", "/api/notes", `{"text":"hello","request_id":"create-hello"}`, 201, `"author_email":"alice@example.test"`},
+		{"request id of another", bobCookie, "POST", "/api/notes", `{"text":"hello","request_id":"create-hello"}`, 409, `{"error":"That request_id was already used for another create."}`},
 		{"invalid", aliceCookie, "POST", "/api/notes", `{"text":" ","request_id":"create-blank"}`, 400, `"error"`},
 		{"other reader", bobCookie, "GET", "/api/notes", "", 200, `"mine":false`},
 		{"not owner", bobCookie, "DELETE", "/api/notes/1", "", 403, `"error"`},
@@ -154,6 +155,12 @@ func TestRoutes(t *testing.T) {
 	repeatStatus, repeatBody := send(aliceCookie, "POST", "/api/notes", `{"text":"once","request_id":"create-once"}`)
 	if _, listBody := send(aliceCookie, "GET", "/api/notes", ""); firstStatus != 201 || repeatStatus != 201 || repeatBody != firstBody || strings.Count(listBody, `"text":"once"`) != 1 {
 		t.Fatalf("repeated create: %d %q, then %d %q, list %q", firstStatus, firstBody, repeatStatus, repeatBody, listBody)
+	}
+	noteChangesLock.Lock()
+	changeCount := len(noteChanges)
+	noteChangesLock.Unlock()
+	if createdLines := logged.matching("INFO note created"); changeCount != 3 || len(createdLines) != 2 {
+		t.Fatalf("repeated create: %d note changes and created lines %q, want 3 changes and one line each for hello and once", changeCount, createdLines)
 	}
 	// Health answers a probe that reaches the app by address, and a page is the
 	// shell, revalidated against its ETag.

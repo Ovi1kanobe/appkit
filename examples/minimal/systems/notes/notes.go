@@ -17,9 +17,10 @@ import (
 )
 
 var (
-	ErrInvalid     = api.Invalid("A note needs between 1 and 500 characters.")
-	ErrNoRequestID = api.Invalid("A create needs a request_id.")
-	ErrNotFound    = api.NotFound("That note no longer exists.")
+	ErrInvalid       = api.Invalid("A note needs between 1 and 500 characters.")
+	ErrNoRequestID   = api.Invalid("A create needs a request_id.")
+	ErrRequestIDUsed = api.Conflict("That request_id was already used for another create.")
+	ErrNotFound      = api.NotFound("That note no longer exists.")
 )
 
 const maximumLength = 500
@@ -119,8 +120,10 @@ func newNote(actor Actor, text string, now time.Time) Note {
 }
 
 // Create adds a note. requestID is the client's id for this create: a repeat
-// with the id of a note already created returns that note and changes
-// nothing, so a client may retry a create it heard no answer to.
+// by the same actor with the id of a note already created returns that note
+// and changes nothing, so a client may retry a create it heard no answer to;
+// the id from another actor returns ErrRequestIDUsed. Every visitor is the
+// public subject, so a visitor's replay returns the same note.
 func (system *System) Create(ctx context.Context, actor Actor, requestID string, text string) (Note, error) {
 	if err := validRequestID(requestID); err != nil {
 		return Note{}, err
@@ -142,7 +145,11 @@ func (system *System) Create(ctx context.Context, actor Actor, requestID string,
 		return Note{}, err
 	}
 	if inserted == 0 {
-		return scanNote(system.database.QueryRowContext(ctx, `SELECT `+noteColumns+` FROM notes WHERE request_id = ?`, requestID))
+		existing, err := scanNote(system.database.QueryRowContext(ctx, `SELECT `+noteColumns+` FROM notes WHERE request_id = ? AND created_by = ?`, requestID, actor.Subject))
+		if errors.Is(err, sql.ErrNoRows) {
+			return Note{}, ErrRequestIDUsed
+		}
+		return existing, err
 	}
 	if note.ID, err = result.LastInsertId(); err != nil {
 		return Note{}, err
