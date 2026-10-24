@@ -16,8 +16,9 @@ import (
 )
 
 var (
-	ErrInvalid  = api.Invalid("A note needs between 1 and 500 characters.")
-	ErrNotFound = api.NotFound("That note no longer exists.")
+	ErrInvalid     = api.Invalid("A note needs between 1 and 500 characters.")
+	ErrNoRequestID = api.Invalid("A create needs a request_id.")
+	ErrNotFound    = api.NotFound("That note no longer exists.")
 )
 
 const maximumLength = 500
@@ -59,25 +60,45 @@ func Open(ctx context.Context, database *sql.DB, onChange func(Change)) (*System
 	return &System{database: database, onChange: onChange}, nil
 }
 
+// noteColumns are the columns scanNote reads, in its order, for every query
+// that returns notes.
+const noteColumns = `id, text, created_by, created_at`
+
+// scanNote reads one row of noteColumns from a *sql.Row or *sql.Rows.
+func scanNote(row interface{ Scan(...any) error }) (Note, error) {
+	var note Note
+	var created string
+	if err := row.Scan(&note.ID, &note.Text, &note.CreatedBy, &created); err != nil {
+		return Note{}, err
+	}
+	var err error
+	note.CreatedAt, err = time.Parse(time.RFC3339, created)
+	return note, err
+}
+
 func (system *System) List(ctx context.Context) ([]Note, error) {
-	rows, err := system.database.QueryContext(ctx, `SELECT id, text, created_by, created_at FROM notes ORDER BY id DESC`)
+	rows, err := system.database.QueryContext(ctx, `SELECT `+noteColumns+` FROM notes ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	notes := []Note{}
 	for rows.Next() {
-		var note Note
-		var created string
-		if err := rows.Scan(&note.ID, &note.Text, &note.CreatedBy, &created); err != nil {
-			return nil, err
-		}
-		if note.CreatedAt, err = time.Parse(time.RFC3339, created); err != nil {
+		note, err := scanNote(rows)
+		if err != nil {
 			return nil, err
 		}
 		notes = append(notes, note)
 	}
 	return notes, rows.Err()
+}
+
+// validRequestID returns ErrNoRequestID when the client sent no request id.
+func validRequestID(requestID string) error {
+	if requestID == "" {
+		return ErrNoRequestID
+	}
+	return nil
 }
 
 // validText returns text without surrounding space, or ErrInvalid when
@@ -96,17 +117,31 @@ func newNote(actor Actor, text string, now time.Time) Note {
 	return Note{Text: text, CreatedBy: actor.Subject, CreatedAt: now.UTC().Truncate(time.Second)}
 }
 
-func (system *System) Create(ctx context.Context, actor Actor, text string) (Note, error) {
+// Create adds a note. requestID is the client's id for this create: a repeat
+// with the id of a note already created returns that note and changes
+// nothing, so a client may retry a create it heard no answer to.
+func (system *System) Create(ctx context.Context, actor Actor, requestID string, text string) (Note, error) {
+	if err := validRequestID(requestID); err != nil {
+		return Note{}, err
+	}
 	text, err := validText(text)
 	if err != nil {
 		return Note{}, err
 	}
 	note := newNote(actor, text, time.Now())
 	created := note.CreatedAt.Format(time.RFC3339)
-	result, err := system.database.ExecContext(ctx, `INSERT INTO notes (text, created_by, created_at, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)`,
-		note.Text, note.CreatedBy, created, note.CreatedBy, created)
+	result, err := system.database.ExecContext(ctx, `INSERT INTO notes (text, created_by, created_at, updated_by, updated_at, request_id) VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT (request_id) DO NOTHING`,
+		note.Text, note.CreatedBy, created, note.CreatedBy, created, requestID)
 	if err != nil {
 		return Note{}, err
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return Note{}, err
+	}
+	if inserted == 0 {
+		return scanNote(system.database.QueryRowContext(ctx, `SELECT `+noteColumns+` FROM notes WHERE request_id = ?`, requestID))
 	}
 	if note.ID, err = result.LastInsertId(); err != nil {
 		return Note{}, err
@@ -117,17 +152,10 @@ func (system *System) Create(ctx context.Context, actor Actor, text string) (Not
 
 // Get returns one note.
 func (system *System) Get(ctx context.Context, id int64) (Note, error) {
-	var note Note
-	var created string
-	err := system.database.QueryRowContext(ctx, `SELECT id, text, created_by, created_at FROM notes WHERE id = ?`, id).
-		Scan(&note.ID, &note.Text, &note.CreatedBy, &created)
+	note, err := scanNote(system.database.QueryRowContext(ctx, `SELECT `+noteColumns+` FROM notes WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Note{}, ErrNotFound
 	}
-	if err != nil {
-		return Note{}, err
-	}
-	note.CreatedAt, err = time.Parse(time.RFC3339, created)
 	return note, err
 }
 

@@ -33,19 +33,20 @@ func PublicNotes(system *notes.System) http.Handler {
 	})
 }
 
-// CreatePublicNote adds a note from {"text"} as identity.PublicSubject, for a
-// visitor who is not signed in, and answers what anyone sees of it. Mount it
-// public with its Origin.
+// CreatePublicNote adds a note from {"text", "request_id"} as
+// identity.PublicSubject, for a visitor who is not signed in, and answers what
+// anyone sees of it. Mount it public with its Origin.
 func CreatePublicNote(system *notes.System) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		var input struct {
-			Text string `json:"text"`
+			Text      string `json:"text"`
+			RequestID string `json:"request_id"`
 		}
 		if err := api.ReadJSON(request, &input); err != nil {
 			api.WriteError(writer, request, err)
 			return
 		}
-		note, err := system.Create(request.Context(), notes.Actor{Subject: identity.PublicSubject}, input.Text)
+		note, err := system.Create(request.Context(), notes.Actor{Subject: identity.PublicSubject}, input.RequestID, input.Text)
 		if err != nil {
 			api.WriteError(writer, request, err)
 			return

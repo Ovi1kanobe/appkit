@@ -9,12 +9,16 @@ export class ApiError extends Error {
 }
 
 export async function api<Result>(path: string, options: { method?: string; body?: unknown } = {}): Promise<Result> {
+  const method = options.method ?? "GET"
+  // Every POST creates, so each carries a fresh request_id and the server answers a repeat with the first record.
+  const body =
+    method === "POST" ? { ...(options.body as object | undefined), request_id: crypto.randomUUID() } : options.body
   let response: Response
   try {
     response = await fetch(path, {
-      method: options.method ?? "GET",
-      headers: options.body === undefined ? undefined : { "Content-Type": "application/json" },
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      method,
+      headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
       cache: "no-store",
     })
   } catch {

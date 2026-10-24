@@ -119,8 +119,8 @@ func TestRoutes(t *testing.T) {
 		{"signed out", nil, "GET", "/api/notes", "", 401, `{"error":"Sign in required."}`},
 		{"no permission", adminCookie, "GET", "/api/notes", "", 403, `"error"`},
 		{"session records the profile", aliceCookie, "GET", "/auth/session", "", 200, `"alice@example.test"`},
-		{"create", aliceCookie, "POST", "/api/notes", `{"text":"hello"}`, 201, `"author_email":"alice@example.test"`},
-		{"invalid", aliceCookie, "POST", "/api/notes", `{"text":" "}`, 400, `"error"`},
+		{"create", aliceCookie, "POST", "/api/notes", `{"text":"hello","request_id":"create-hello"}`, 201, `"author_email":"alice@example.test"`},
+		{"invalid", aliceCookie, "POST", "/api/notes", `{"text":" ","request_id":"create-blank"}`, 400, `"error"`},
 		{"other reader", bobCookie, "GET", "/api/notes", "", 200, `"mine":false`},
 		{"not owner", bobCookie, "DELETE", "/api/notes/1", "", 403, `"error"`},
 		{"owner deletes", aliceCookie, "DELETE", "/api/notes/1", "", 204, ""},
@@ -140,6 +140,12 @@ func TestRoutes(t *testing.T) {
 	noteChangesLock.Unlock()
 	if len(changes) != 2 || changes[0].Note == nil || changes[0].By != "alice" || changes[0].At.IsZero() || changes[1].Note != nil || changes[1].By != "alice" || changes[1].At.IsZero() {
 		t.Fatalf("note changes %+v, want alice's create and delete, dated", changes)
+	}
+	// A create repeated with its request_id answers the note the first made, and makes no second.
+	firstStatus, firstBody := send(aliceCookie, "POST", "/api/notes", `{"text":"once","request_id":"create-once"}`)
+	repeatStatus, repeatBody := send(aliceCookie, "POST", "/api/notes", `{"text":"once","request_id":"create-once"}`)
+	if _, listBody := send(aliceCookie, "GET", "/api/notes", ""); firstStatus != 201 || repeatStatus != 201 || repeatBody != firstBody || strings.Count(listBody, `"text":"once"`) != 1 {
+		t.Fatalf("repeated create: %d %q, then %d %q, list %q", firstStatus, firstBody, repeatStatus, repeatBody, listBody)
 	}
 	// Health answers a probe that reaches the app by address, and a page is the
 	// shell, revalidated against its ETag.
@@ -161,7 +167,7 @@ func TestRoutes(t *testing.T) {
 	}
 	// The public notes route answers anyone, signed out, with exactly the
 	// fields its public read rule lists.
-	if status, _ := send(aliceCookie, "POST", "/api/notes", `{"text":"for everyone"}`); status != 201 {
+	if status, _ := send(aliceCookie, "POST", "/api/notes", `{"text":"for everyone","request_id":"create-for-everyone"}`); status != 201 {
 		t.Fatalf("seed a public note: %d", status)
 	}
 	status, body := send(nil, "GET", httpapi.PublicNotesPattern[len("GET "):], "")
@@ -202,7 +208,7 @@ func TestRoutes(t *testing.T) {
 		data, _ := io.ReadAll(response.Body)
 		return response.StatusCode, response.Header, string(data)
 	}
-	status, header, body := visitor("POST", "application/json", `{"text":"from a visitor"}`)
+	status, header, body := visitor("POST", "application/json", `{"text":"from a visitor","request_id":"visit-1"}`)
 	var visitorNote map[string]any
 	if err := json.Unmarshal([]byte(body), &visitorNote); status != 201 || err != nil || header.Get("Access-Control-Allow-Origin") != "*" {
 		t.Fatalf("visitor note: %d %q %v %v", status, body, err, header)
@@ -230,19 +236,22 @@ func TestRoutes(t *testing.T) {
 	if status, _ := send(aliceCookie, "DELETE", fmt.Sprintf("/api/notes/%d", visitorNoteID), ""); status != 403 {
 		t.Fatalf("alice deleted the visitor note: %d", status)
 	}
-	if status, _, body := visitor("POST", "", `{"text":"no content type"}`); status != 415 || body != `{"error":"Send JSON with Content-Type: application/json."}`+"\n" {
+	if status, _, body := visitor("POST", "", `{"text":"no content type","request_id":"visit-no-content-type"}`); status != 415 || body != `{"error":"Send JSON with Content-Type: application/json."}`+"\n" {
 		t.Fatalf("visitor note without the JSON content type: %d %q", status, body)
 	}
 	if status, header, _ := visitor("OPTIONS", "", ""); status != 204 || header.Get("Access-Control-Allow-Methods") != "GET, HEAD, POST" || header.Get("Access-Control-Allow-Headers") != "Content-Type" {
 		t.Fatalf("visitor preflight: %d %v", status, header)
 	}
-	// From three: the 415 above spent a token, since the limiter runs before the content type check.
-	for count := 3; count <= 5; count++ {
-		if status, _, body := visitor("POST", "application/json", `{"text":"again"}`); status != 201 {
+	if status, _, body := visitor("POST", "application/json", `{"text":"no request id"}`); status != 400 || body != `{"error":"A create needs a request_id."}`+"\n" {
+		t.Fatalf("visitor note without a request_id: %d %q", status, body)
+	}
+	// From four: the 415 and the 400 above each spent a token, since the limiter runs first.
+	for count := 4; count <= 5; count++ {
+		if status, _, body := visitor("POST", "application/json", fmt.Sprintf(`{"text":"again","request_id":"visit-%d"}`, count)); status != 201 {
 			t.Fatalf("visitor note %d: %d %q", count, status, body)
 		}
 	}
-	if status, header, _ := visitor("POST", "application/json", `{"text":"one too many"}`); status != 429 || header.Get("Retry-After") == "" {
+	if status, header, _ := visitor("POST", "application/json", `{"text":"one too many","request_id":"visit-one-too-many"}`); status != 429 || header.Get("Retry-After") == "" {
 		t.Fatalf("sixth visitor note in a minute: %d %v", status, header)
 	}
 	// A key a member made reaches the routes its scope covers as that member,
@@ -250,7 +259,7 @@ func TestRoutes(t *testing.T) {
 	keyID, secret := provider.CreateKey(t, app.URL, aliceCookie, "ci", access.NotesRead)
 	withKey := func(method, path string) int {
 		t.Helper()
-		request, _ := http.NewRequest(method, app.URL+path, strings.NewReader(`{"text":"by key"}`))
+		request, _ := http.NewRequest(method, app.URL+path, strings.NewReader(`{"text":"by key","request_id":"create-by-key"}`))
 		request.Header.Set("Authorization", "Bearer "+secret)
 		request.Header.Set("Content-Type", "application/json")
 		response, err := http.DefaultClient.Do(request)
