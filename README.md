@@ -111,21 +111,30 @@ API and WebSocket errors from AppKit use the same `{"error": "..."}` body as app
 `Public` is for anyone, with any method, and needs no permission.
 Its handler sees no cookie, authorization, trailer, or URL userinfo, and `identity.FromContext` panics in it, because a public answer is independent of any identity.
 A public write records `identity.PublicSubject`, `"public"`, as its actor: the handler builds the system's actor with it, reads a struct of the writable fields only, and leaves validation to the system.
-No signed-in person carries that subject, since a person's is Rauthy's own ID and an empty one counts as no identity, so a rule comparing subjects never matches a public write.
+No identity a handler sees carries that subject, so a rule comparing subjects never matches a public write: Rauthy generates people's subjects, and `authz.New` refuses a policy whose client list names `public`, which is the one place a collision could enter.
 It may stream with `http.Flusher`, but cannot hijack the connection.
 A request to it with a `Bearer` credential answers 400, since the caller meant another route, and so does a WebSocket upgrade.
 Its options are `PublicOptions{Probe: true}`, which serves any Host and drops credentials silently, for one health path a load balancer reaches by address, `Origin`, `CrossOrigin`, `CrossOriginRequestHeaders`, and `RateLimit`, below.
 Each public route is logged once at mount, with its origin policy, cross-origin headers, and rate limit, so the log lists them.
 
 A write, `POST`, `PUT`, `PATCH`, or `DELETE`, names who may submit it in `Origin`, or panics at mount; `Origin` on a `GET` panics, since it would do nothing.
-`identity.SameOrigin` applies the check private mutations get and answers any other origin 403 with `{"error": "Same-origin request required."}`, for a form on the app's own pages.
-`identity.AnyOrigin` checks no origin, for a page on another site or a client that is no browser.
+`identity.SameOrigin` is for the app's own pages only: it applies the check private mutations get, before the rate limit, and answers anything else 403 with `{"error": "Same-origin request required."}`.
+That includes every client that is no browser, since a request with neither `Origin` nor `Sec-Fetch-Site` fails the check, so curl, a server, or a mobile app gets 403.
+A handler that uses `api.ReadJSON` answers a plain HTML form 415, so `SameOrigin` suits a fetch with JSON from the app's pages, or a form only when the handler reads form values.
+`SameOrigin` with `CrossOrigin` panics, since it refuses every other origin anyway.
+`identity.AnyOrigin` checks no origin, and alone serves clients that are no browser and plain cross-site form posts.
+A fetch with JSON from a page on another origin also needs `CrossOrigin: true` and `CrossOriginRequestHeaders` listing `Content-Type`, as the minimal example's route line does:
+
+```go
+router.Public(httpapi.CreatePublicNotePattern, httpapi.CreatePublicNote(noteSystem), identity.PublicOptions{Origin: identity.AnyOrigin, CrossOrigin: true, CrossOriginRequestHeaders: []string{"Content-Type"}, RateLimit: identity.RateLimit{Requests: 5, Per: time.Minute}})
+```
+
 `CrossOrigin: true` adds `Access-Control-Allow-Origin: *` to every answer, its 400, 403, 413, 421, and 429 refusals included, and exposes `Retry-After`; no credential is ever allowed across origins.
-`CrossOriginRequestHeaders` lists the request headers a cross-origin page may send, matched case-insensitively, such as `[]string{"Content-Type"}` for JSON; it needs `CrossOrigin`, and a name that is not a header name panics.
+`CrossOriginRequestHeaders` lists the request headers a cross-origin page may send, matched case-insensitively; it needs `CrossOrigin`, and a name that is not a header name, or `Authorization`, `Cookie`, or `Proxy-Authorization`, panics, since a public route takes no credentials.
 
 The router answers a CORS preflight, an `OPTIONS` request with `Access-Control-Request-Method`, before any route, for the route the requested method reaches.
-It answers 204 only for a public route with `CrossOrigin` whose Host check and origin policy pass and whose list covers every requested header, with `Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods` naming each method whose route at that path qualifies too, `Access-Control-Allow-Headers` naming the requested headers, and `Vary`.
-A malformed preflight answers 400, one for a route that is not cross-origin 403 without the allow header, and one refused by the Host check, origin policy, or header list 421 or 403 with it.
+It answers 204 only for a public route with `CrossOrigin` whose Host check passes and whose list covers every requested header, with `Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods` naming each method whose route at that path is public with `CrossOrigin`, `Access-Control-Allow-Headers` naming the requested headers, and `Vary`.
+A malformed preflight answers 400, one for a route that is not cross-origin, a `SameOrigin` write among them, 403 without the allow header, and one refused by the Host check or header list 421 or 403 with it.
 A preflight never reaches a handler, reads no body, spends no rate limit token, and sends no `Access-Control-Max-Age`; any other `OPTIONS` request goes to the route table as before.
 
 `RateLimit` caps how often one caller may call a route, on any kind: `identity.PublicOptions{RateLimit: identity.RateLimit{Requests: 60, Per: time.Minute}}`, and likewise `PrivateOptions` and `ServiceOptions`, as the last argument.
