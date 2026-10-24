@@ -44,8 +44,9 @@ func (system *System) Snapshot() Status {
 	return statusAt(system.started, time.Now())
 }
 
-// Run reports the status every reportEvery until ctx ends. There is nothing
-// to finish at shutdown, so it returns at once.
+// Run reports the status every reportEvery until ctx ends. A report changes
+// nothing stored, so it writes no log line. There is nothing to finish at
+// shutdown, so it returns at once.
 func (system *System) Run(ctx context.Context) error {
 	ticker := time.NewTicker(reportEvery)
 	defer ticker.Stop()

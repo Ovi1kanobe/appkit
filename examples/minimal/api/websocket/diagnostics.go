@@ -17,8 +17,10 @@ const DiagnosticsTopic = "diagnostics.changed"
 
 // Status subscribes the page to status changes and sends it the viewer's
 // snapshot first, right after Ready, because no HTTP route serves the status
-// to a page and the next timed report is up to five seconds away. Mount it
-// behind access.DiagnosticsRead.
+// to a page and the next timed report may be a while away. A report already
+// being sent can arrive after the snapshot and be older than it; the next
+// report replaces it, which is safe here and would not be for a value that
+// changes rarely. Mount it behind access.DiagnosticsRead.
 func Status(system *diagnostics.System, hub *realtime.Hub) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		connection, err := hub.Accept(writer, request)

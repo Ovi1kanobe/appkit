@@ -91,10 +91,12 @@ func TestRoutes(t *testing.T) {
 	}
 	hub := &realtime.Hub{}
 	defer hub.Close()
+	var publishers sync.WaitGroup
+	defer publishers.Wait()
 	publishing, stopPublishing := context.WithCancel(ctx)
 	defer stopPublishing()
 	diagnosticsPublisher := wsapi.NewDiagnosticsPublisher(hub)
-	go diagnosticsPublisher.Run(publishing)
+	publishers.Go(func() { diagnosticsPublisher.Run(publishing) })
 	diagnosticSystem := diagnostics.New(diagnosticsPublisher.Add)
 	app.Config.Handler = routes(sessions, remoteClientAddress(t), profiles, diagnosticSystem, noteSystem, emailSystem, hub, pages)
 
@@ -329,7 +331,8 @@ func TestRoutes(t *testing.T) {
 	}
 
 	// The status socket says it is ready, sends the viewer's snapshot at once,
-	// and then every status the diagnostics system reports.
+	// and then each change handed to the publisher, which the system's Run does
+	// every reportEvery; the test hands one over itself rather than wait for it.
 	socketContext, cancelSocket := context.WithTimeout(ctx, 10*time.Second)
 	defer cancelSocket()
 	socket, _, err := websocket.Dial(socketContext, "ws"+strings.TrimPrefix(app.URL, "http")+"/ws/status", &websocket.DialOptions{
