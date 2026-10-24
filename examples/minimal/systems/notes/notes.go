@@ -28,10 +28,10 @@ const maximumLength = 500
 type Actor struct{ Subject string }
 
 type Note struct {
-	ID        int64     `json:"id"`
-	Text      string    `json:"text"`
-	CreatedBy string    `json:"-"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        int64
+	Text      string
+	CreatedBy string
+	CreatedAt time.Time
 }
 
 // Change is a created note, or a deleted note's ID with Note nil.

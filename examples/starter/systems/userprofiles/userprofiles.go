@@ -20,8 +20,8 @@ var ErrInvalid = api.Invalid("A profile needs a subject.")
 
 // UserProfile is what the application knows about one person.
 type UserProfile struct {
-	Subject string `json:"-"`
-	Email   string `json:"email"`
+	Subject string
+	Email   string
 }
 
 type System struct {
