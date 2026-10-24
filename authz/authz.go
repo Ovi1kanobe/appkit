@@ -8,6 +8,12 @@ import (
 	"sort"
 )
 
+// reservedPublicClientID is identity.PublicSubject, the subject a public
+// write records, which no calling application may share. It is spelled out
+// here because identity imports authz; identity's router test keeps the two
+// in step.
+const reservedPublicClientID = "public"
+
 // Policy is immutable after construction and safe for concurrent use.
 type Policy struct {
 	roles     map[string][]string
@@ -20,7 +26,9 @@ type Policy struct {
 // groups that grant them to people, the Rauthy client IDs that grant them to
 // calling applications, and the permissions a person may give a key. An
 // application nobody calls passes nil clients; one that issues no keys passes
-// nil delegable. A delegable permission must be one some role grants.
+// nil delegable. A delegable permission must be one some role grants. The
+// client ID "public" is refused, since it is reserved for anonymous public
+// writes.
 func New(roles, groups, clients map[string][]string, delegable []string) (*Policy, error) {
 	policy := &Policy{roles: make(map[string][]string), groups: make(map[string][]string), clients: make(map[string][]string), delegable: make(map[string]struct{})}
 	for role, permissions := range roles {
@@ -48,6 +56,9 @@ func New(roles, groups, clients map[string][]string, delegable []string) (*Polic
 	for client, mapped := range clients {
 		if client == "" {
 			return nil, fmt.Errorf("authz: empty client")
+		}
+		if client == reservedPublicClientID {
+			return nil, fmt.Errorf("authz: client ID %q is reserved for anonymous public writes; give the calling application another client ID in Rauthy", client)
 		}
 		for _, role := range mapped {
 			if _, exists := policy.roles[role]; !exists {

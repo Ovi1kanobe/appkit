@@ -103,4 +103,8 @@ func TestInvalidPolicy(t *testing.T) {
 			t.Fatal("invalid policy accepted")
 		}
 	}
+	// The public subject is no calling application's client ID.
+	if _, err := New(reader, nil, map[string][]string{"public": {"reader"}}, nil); err == nil || err.Error() != `authz: client ID "public" is reserved for anonymous public writes; give the calling application another client ID in Rauthy` {
+		t.Fatalf("reserved client ID: %v", err)
+	}
 }
