@@ -56,18 +56,44 @@ func Open(ctx context.Context, database *sql.DB, key *encryption.Key, onChange f
 	return &System{database: database, key: key, onChange: onChange}, nil
 }
 
-// SetAPIKey replaces the provider API key.
-func (system *System) SetAPIKey(ctx context.Context, actor Actor, apiKey string) error {
+// keyRecord is the email_settings row SetAPIKey writes, with the API key not
+// yet encrypted.
+type keyRecord struct {
+	APIKey    string
+	LastFour  string
+	UpdatedBy string
+	UpdatedAt time.Time
+}
+
+// validAPIKey returns apiKey without surrounding space, or ErrInvalid when it
+// has fewer than 8 or more than 500 characters or holds a space.
+func validAPIKey(apiKey string) (string, error) {
 	apiKey = strings.TrimSpace(apiKey)
 	length := utf8.RuneCountInString(apiKey)
 	if length < 8 || length > 500 || strings.ContainsAny(apiKey, " \t\r\n") {
-		return ErrInvalid
+		return "", ErrInvalid
 	}
+	return apiKey, nil
+}
+
+// newKeyRecord is the row for a valid apiKey that actor sets at now, which is
+// stored to the second, with the key's last four characters.
+func newKeyRecord(actor Actor, apiKey string, now time.Time) keyRecord {
 	runes := []rune(apiKey)
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := system.database.ExecContext(ctx, `INSERT INTO email_settings (id, api_key, last_four, created_by, created_at, updated_by, updated_at) VALUES (1, ?, ?, ?, ?, ?, ?)
+	return keyRecord{APIKey: apiKey, LastFour: string(runes[len(runes)-4:]), UpdatedBy: actor.Subject, UpdatedAt: now.UTC().Truncate(time.Second)}
+}
+
+// SetAPIKey replaces the provider API key.
+func (system *System) SetAPIKey(ctx context.Context, actor Actor, apiKey string) error {
+	apiKey, err := validAPIKey(apiKey)
+	if err != nil {
+		return err
+	}
+	record := newKeyRecord(actor, apiKey, time.Now())
+	updated := record.UpdatedAt.Format(time.RFC3339)
+	_, err = system.database.ExecContext(ctx, `INSERT INTO email_settings (id, api_key, last_four, created_by, created_at, updated_by, updated_at) VALUES (1, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET api_key = excluded.api_key, last_four = excluded.last_four, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
-		system.key.Encrypt(apiKeyLabel, apiKey), string(runes[len(runes)-4:]), actor.Subject, now, actor.Subject, now)
+		system.key.Encrypt(apiKeyLabel, record.APIKey), record.LastFour, record.UpdatedBy, updated, record.UpdatedBy, updated)
 	if err != nil {
 		return err
 	}
