@@ -218,6 +218,7 @@ func TestRoutes(t *testing.T) {
 	if status, header, _ := visitor("OPTIONS", "", ""); status != 204 || header.Get("Access-Control-Allow-Methods") != "GET, HEAD, POST" || header.Get("Access-Control-Allow-Headers") != "Content-Type" {
 		t.Fatalf("visitor preflight: %d %v", status, header)
 	}
+	// From three: the 415 above spent a token, since the limiter runs before the content type check.
 	for count := 3; count <= 5; count++ {
 		if status, _, body := visitor("POST", "application/json", `{"text":"again"}`); status != 201 {
 			t.Fatalf("visitor note %d: %d %q", count, status, body)

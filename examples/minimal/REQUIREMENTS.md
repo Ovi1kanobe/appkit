@@ -18,6 +18,7 @@ A member opens Notes, adds a short note, and sees it in the shared list with eve
     1. Given a signed-in member, when they add a note of 1 to 500 characters, then it appears at the top of every open Notes page.
     2. Given a note by another member, when a member tries to delete it, then the app refuses with 403 and the note stays.
     3. Given an empty note or one over 500 characters, when it is submitted, then the app answers 400 with the sentence the person reads.
+    4. Given a visitor who is not signed in, on a page on any origin, when they post a note of 1 to 500 characters, then the app answers 201 with its `id`, `text`, and `created_at`, and members see it as Anonymous and cannot delete it.
 
 ### 2. Watch the process (P2)
 A member opens the Dashboard and sees how long the process has been running, updating live.
@@ -45,6 +46,7 @@ An admin enters the email provider's API key once on Settings and sees that it i
 - FR-003: The app must push every note change to every open Notes page.
 - FR-004: The app must report process uptime to members and to a calling app.
 - FR-005: An admin must be able to store the email provider's API key, encrypted, and see only whether it is set and its last four characters.
+- FR-006: A visitor who is not signed in must be able to add a note of 1 to 500 characters from a page on any origin, at most 5 a minute per address.
 
 ## Key entities
 - Note: text, author by subject, created time; belongs to one person; a note a visitor posted belongs to the public subject, and no member may delete it.
