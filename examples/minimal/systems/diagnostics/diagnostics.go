@@ -5,7 +5,7 @@ import "time"
 
 type System struct{ started time.Time }
 type Status struct {
-	UptimeSeconds int64 `json:"uptime_seconds"`
+	UptimeSeconds int64
 }
 
 func New() *System { return &System{started: time.Now()} }

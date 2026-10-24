@@ -30,9 +30,9 @@ type Actor struct{ Subject string }
 
 // KeyStatus describes the stored API key without revealing it.
 type KeyStatus struct {
-	Set       bool      `json:"set"`
-	LastFour  string    `json:"last_four,omitempty"`
-	UpdatedAt time.Time `json:"updated_at,omitzero"`
+	Set       bool
+	LastFour  string
+	UpdatedAt time.Time
 }
 
 // Change is the key status after it changed.
