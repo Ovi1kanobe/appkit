@@ -10,5 +10,10 @@ type Status struct {
 
 func New() *System { return &System{started: time.Now()} }
 func (system *System) Snapshot() Status {
-	return Status{UptimeSeconds: int64(time.Since(system.started).Seconds())}
+	return statusAt(system.started, time.Now())
+}
+
+// statusAt is the status at now of a process that started at started.
+func statusAt(started, now time.Time) Status {
+	return Status{UptimeSeconds: int64(now.Sub(started).Seconds())}
 }
