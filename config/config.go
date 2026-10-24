@@ -17,6 +17,7 @@ import (
 
 	"github.com/Ovi1kanobe/appkit/encryption"
 	"github.com/Ovi1kanobe/appkit/identity"
+	"github.com/Ovi1kanobe/appkit/internal/httpname"
 )
 
 // Environment collects declarations. AppKit packages declare their own
@@ -197,7 +198,7 @@ func ParseClientAddress(clientAddress, trustedProxies string) (func(*http.Reques
 		return func(request *http.Request) string { return addressKey(request.RemoteAddr) }, nil
 	}
 	name, found := strings.CutPrefix(clientAddress, "header:")
-	if !found || !validHeaderName(name) {
+	if !found || !httpname.ValidHeaderName(name) {
 		return nil, &VariableError{"CLIENT_ADDRESS", fmt.Sprintf("must be remote, for the connection's address when nothing sits in front of the app, or header:<Name>, such as header:X-Forwarded-For, for the header the reverse proxy sets; got %q", clientAddress)}
 	}
 	name = textproto.CanonicalMIMEHeaderKey(name)
@@ -324,19 +325,4 @@ func addressKey(value string) string {
 		return network.String()
 	}
 	return address.String()
-}
-
-// validHeaderName reports whether name is a non-empty HTTP header name: only
-// letters, digits, and the token punctuation RFC 9110 allows.
-func validHeaderName(name string) bool {
-	if name == "" {
-		return false
-	}
-	for _, character := range name {
-		isLetterOrDigit := character < 128 && (character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9')
-		if !isLetterOrDigit && !strings.ContainsRune("!#$%&'*+-.^_`|~", character) {
-			return false
-		}
-	}
-	return true
 }

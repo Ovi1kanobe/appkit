@@ -65,7 +65,13 @@ func TestRouter(t *testing.T) {
 		{func() { router.Public("POST /api/posts", ok) }, `identity: router.Public("POST /api/posts"): a write names its Origin, identity.SameOrigin or identity.AnyOrigin`},
 		{func() { router.Public("DELETE /api/posts/{id}", ok, identity.PublicOptions{CrossOrigin: true}) }, `identity: router.Public("DELETE /api/posts/{id}"): a write names its Origin`},
 		{func() { router.Public("POST /api/posts", ok, identity.PublicOptions{Origin: identity.OriginPolicy(7)}) }, `identity: router.Public("POST /api/posts"): Origin is identity.SameOrigin or identity.AnyOrigin`},
-		{func() { router.Public("GET /api/catalogue", ok, identity.PublicOptions{Origin: identity.AnyOrigin}) }, `identity: router.Public("GET /api/catalogue"): Origin does nothing on a GET, which changes nothing; remove it`},
+		{func() { router.Public("GET /api/catalogue", ok, identity.PublicOptions{Origin: identity.AnyOrigin}) }, `identity: router.Public("GET /api/catalogue"): Origin is for writes; a GET needs none, so remove it`},
+		{func() {
+			router.Public("POST /api/posts", ok, identity.PublicOptions{Origin: identity.SameOrigin, CrossOrigin: true})
+		}, `identity: router.Public("POST /api/posts"): a SameOrigin write refuses every other origin, so CrossOrigin would do nothing; use identity.AnyOrigin or remove CrossOrigin`},
+		{func() {
+			router.Public("POST /api/posts", ok, identity.PublicOptions{Origin: identity.AnyOrigin, CrossOrigin: true, CrossOriginRequestHeaders: []string{"Content-Type", "authorization"}})
+		}, `identity: router.Public("POST /api/posts"): CrossOriginRequestHeaders has Authorization, but a public route takes no credentials`},
 		{func() {
 			router.Public("POST /api/posts", ok, identity.PublicOptions{Origin: identity.AnyOrigin, CrossOriginRequestHeaders: []string{"Content-Type"}})
 		}, `identity: router.Public("POST /api/posts"): CrossOriginRequestHeaders needs CrossOrigin: true, since only a cross-origin route answers preflights`},
@@ -139,17 +145,19 @@ func TestRouter(t *testing.T) {
 	identity.SetRouterRateLimitKeys(router, defaultKeys)
 	// Writes, one per method, and one path with a cross-origin read and writes
 	// for the preflight rows: a JSON POST from any origin, limited to one a
-	// minute, and a PUT only the app's own pages may send.
+	// minute, and a PUT without CrossOrigin, which only the app's own pages
+	// may send.
 	anyOrigin := identity.PublicOptions{Origin: identity.AnyOrigin}
 	router.Public("POST /public/write", echo, anyOrigin)
 	router.Public("PUT /public/write", ok, anyOrigin)
 	router.Public("PATCH /public/write", ok, anyOrigin)
 	router.Public("DELETE /public/write", ok, anyOrigin)
 	router.Public("POST /public/same-origin", ok, identity.PublicOptions{Origin: identity.SameOrigin})
+	router.Public("POST /public/same-origin-limited", ok, identity.PublicOptions{Origin: identity.SameOrigin, RateLimit: identity.RateLimit{Requests: 1, Per: time.Minute}})
 	router.Public("POST /public/reads-identity", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { identity.FromContext(r.Context()) }), anyOrigin)
 	router.Public("GET /public/cross-origin", ok, identity.PublicOptions{CrossOrigin: true})
 	router.Public("POST /public/cross-origin", ok, identity.PublicOptions{Origin: identity.AnyOrigin, CrossOrigin: true, CrossOriginRequestHeaders: []string{"content-type"}, RateLimit: identity.RateLimit{Requests: 1, Per: time.Minute}})
-	router.Public("PUT /public/cross-origin", ok, identity.PublicOptions{Origin: identity.SameOrigin, CrossOrigin: true})
+	router.Public("PUT /public/cross-origin", ok, identity.PublicOptions{Origin: identity.SameOrigin})
 	slog.SetDefault(defaultLogger)
 	for _, line := range []string{
 		`"msg":"AppKit public route","pattern":"POST /public/write","subtree":false,"probe":false,"origin":"any-origin","cross_origin":false,"cross_origin_request_headers":[],"rate_limit":""`,
@@ -165,8 +173,13 @@ func TestRouter(t *testing.T) {
 			t.Fatalf("mount log missing %s in:\n%s", line, mountLog.String())
 		}
 	}
-	if count := strings.Count(mountLog.String(), "AppKit public route"); count != 17 {
-		t.Fatalf("%d public route lines, want 17", count)
+	if count := strings.Count(mountLog.String(), "AppKit public route"); count != 18 {
+		t.Fatalf("%d public route lines, want 18", count)
+	}
+	// authz refuses the public subject as a client ID, under its own copy of
+	// the name, since identity imports authz; this keeps the two in step.
+	if _, err := authz.New(map[string][]string{"reader": {"notes.read"}}, nil, map[string][]string{identity.PublicSubject: {"reader"}}, nil); err == nil {
+		t.Fatalf("authz accepted %q as a client ID", identity.PublicSubject)
 	}
 
 	readJSON := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -247,11 +260,20 @@ func TestRouter(t *testing.T) {
 		{"cross-site form post to an AnyOrigin write served", "POST", "/public/write", "", nil, map[string]string{"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site", "Content-Type": "application/x-www-form-urlencoded"}, "text=hi", 200, `"cookie":""`, map[string]string{"Access-Control-Allow-Origin": ""}},
 		{"cross-site form post to a SameOrigin write refused", "POST", "/public/same-origin", "", nil, map[string]string{"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site", "Content-Type": "application/x-www-form-urlencoded"}, "text=hi", 403, `{"error":"Same-origin request required."}`, nil},
 		{"same-origin post to a SameOrigin write served", "POST", "/public/same-origin", "", nil, map[string]string{"Origin": app.URL, "Sec-Fetch-Site": "same-origin"}, "", 200, "ok", nil},
-		{"SameOrigin write keeps the host check first", "POST", "/public/same-origin", "wrong.example", nil, map[string]string{"Origin": "https://evil.example"}, "", 421, "This application is served at " + app.URL, nil},
-		// Preflights are answered before any route, and never spend the POST's one token a minute.
+		{"SameOrigin write refuses a client that is no browser", "POST", "/public/same-origin", "", nil, nil, "", 403, `{"error":"Same-origin request required."}`, nil},
+		{"SameOrigin write keeps the host check", "POST", "/public/same-origin", "wrong.example", nil, map[string]string{"Origin": app.URL, "Sec-Fetch-Site": "same-origin"}, "", 421, "This application is served at " + app.URL, nil},
+		// In order: the cross-site refusal spends none of the route's one token a minute.
+		{"cross-site post refused before the rate limit", "POST", "/public/same-origin-limited", "", nil, map[string]string{"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"}, "", 403, `{"error":"Same-origin request required."}`, nil},
+		{"same-origin post after a cross-site refusal served", "POST", "/public/same-origin-limited", "", nil, map[string]string{"Origin": app.URL, "Sec-Fetch-Site": "same-origin"}, "", 200, "ok", nil},
+		{"same-origin post over the limit", "POST", "/public/same-origin-limited", "", nil, map[string]string{"Origin": app.URL, "Sec-Fetch-Site": "same-origin"}, "", 429, `{"error":"Too many requests; try again later."}`, nil},
+		// Preflights are answered before any route. In order: none of the rows
+		// up to "cross-origin write after its preflights served" may spend the
+		// POST's one token a minute, which that row then spends.
+		{"preflight asking for HEAD", "OPTIONS", "/public/cross-origin", "", nil, map[string]string{"Origin": "https://shop.example", "Access-Control-Request-Method": "HEAD"}, "", 204, "", map[string]string{"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, HEAD, POST", "Access-Control-Allow-Headers": ""}},
+		{"preflight on a path that does not exist", "OPTIONS", "/public/nothing", "", nil, map[string]string{"Origin": "https://shop.example", "Access-Control-Request-Method": "GET"}, "", 403, `{"error":"This route does not accept requests from other origins."}`, map[string]string{"Access-Control-Allow-Origin": ""}},
 		{"preflight for a cross-origin write", "OPTIONS", "/public/cross-origin", "", nil, map[string]string{"Origin": "https://shop.example", "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type"}, "", 204, "", map[string]string{"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, HEAD, POST", "Access-Control-Allow-Headers": "Content-Type", "Vary": "Origin, Access-Control-Request-Method, Access-Control-Request-Headers", "Access-Control-Allow-Credentials": "", "Access-Control-Max-Age": "", "Cache-Control": "no-store"}},
 		{"preflight for a header the route does not list", "OPTIONS", "/public/cross-origin", "", nil, map[string]string{"Origin": "https://shop.example", "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type,x-trace"}, "", 403, `{"error":"This route does not accept the X-Trace header from other origins."}`, map[string]string{"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": ""}},
-		{"preflight for a SameOrigin write from another origin", "OPTIONS", "/public/cross-origin", "", nil, map[string]string{"Origin": "https://shop.example", "Access-Control-Request-Method": "PUT"}, "", 403, `{"error":"Same-origin request required."}`, map[string]string{"Access-Control-Allow-Origin": "*"}},
+		{"preflight for a SameOrigin write from another origin", "OPTIONS", "/public/cross-origin", "", nil, map[string]string{"Origin": "https://shop.example", "Access-Control-Request-Method": "PUT"}, "", 403, `{"error":"This route does not accept requests from other origins."}`, map[string]string{"Access-Control-Allow-Origin": ""}},
 		{"preflight keeps the host check", "OPTIONS", "/public/cross-origin", "wrong.example", nil, map[string]string{"Origin": "https://shop.example", "Access-Control-Request-Method": "POST"}, "", 421, "This application is served at " + app.URL, map[string]string{"Access-Control-Allow-Origin": "*"}},
 		{"preflight for a private route", "OPTIONS", "/private", "", nil, map[string]string{"Origin": "https://shop.example", "Access-Control-Request-Method": "POST"}, "", 403, `{"error":"This route does not accept requests from other origins."}`, map[string]string{"Access-Control-Allow-Origin": ""}},
 		{"preflight for a public route without cross-origin", "OPTIONS", "/public/write", "", nil, map[string]string{"Origin": "https://shop.example", "Access-Control-Request-Method": "POST"}, "", 403, `{"error":"This route does not accept requests from other origins."}`, map[string]string{"Access-Control-Allow-Origin": ""}},
@@ -378,6 +400,18 @@ func TestRouter(t *testing.T) {
 	router.ServeHTTP(echoed, withUserinfo)
 	if echoed.Code != 200 || !strings.Contains(echoed.Body.String(), `"user":""`) {
 		t.Fatalf("userinfo reached the public handler: %d %s", echoed.Code, echoed.Body.String())
+	}
+
+	// A preflight with two Origin headers is malformed.
+	twoOrigins := httptest.NewRequest("OPTIONS", "/public/cross-origin", nil)
+	twoOrigins.Host = mustHost(t, app.URL)
+	twoOrigins.Header.Add("Origin", "https://shop.example")
+	twoOrigins.Header.Add("Origin", "https://other.example")
+	twoOrigins.Header.Set("Access-Control-Request-Method", "POST")
+	refused := httptest.NewRecorder()
+	router.ServeHTTP(refused, twoOrigins)
+	if refused.Code != 400 || strings.TrimSpace(refused.Body.String()) != `{"error":"A preflight names one Origin."}` || refused.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("two-origin preflight: %d %q", refused.Code, refused.Body.String())
 	}
 
 	// A public handler that reads the identity fails loudly instead of

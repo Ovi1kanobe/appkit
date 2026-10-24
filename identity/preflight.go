@@ -6,6 +6,8 @@ import (
 	"net/textproto"
 	"slices"
 	"strings"
+
+	"github.com/Ovi1kanobe/appkit/internal/httpname"
 )
 
 // preflightMethods are the methods a preflight may ask for: every route
@@ -15,13 +17,13 @@ var preflightMethods = append([]string{http.MethodHead}, routeMethods...)
 // preflight answers a CORS preflight for the route its requested method
 // resolves to, without reaching that route, reading the body, or spending a
 // rate limit token. It answers 204 only for a public route with CrossOrigin
-// whose Host check and Origin policy pass and whose
-// CrossOriginRequestHeaders cover every requested header. It allows the
-// requested headers, every method whose route at the path is public with
-// CrossOrigin and whose Origin policy passes, and never a credential. A
+// whose Host check passes and whose CrossOriginRequestHeaders cover every
+// requested header. It allows the requested headers, every method whose
+// route at the path is public with CrossOrigin, and never a credential. A
 // malformed preflight answers 400, a route that is not cross-origin 403
 // without the allow header, and any other refusal 403 or 421 with it, so the
-// page can read why.
+// page can read why. A SameOrigin write never has CrossOrigin, so it is
+// refused as a route that is not cross-origin.
 func (router *Router) preflight(writer http.ResponseWriter, request *http.Request) {
 	header := writer.Header()
 	header.Add("Vary", "Origin, Access-Control-Request-Method, Access-Control-Request-Headers")
@@ -46,10 +48,6 @@ func (router *Router) preflight(writer http.ResponseWriter, request *http.Reques
 	}
 	header.Set("Access-Control-Allow-Origin", "*")
 	answer := http.Handler(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if !router.sessions.originAllowed(option, request) {
-			writeError(writer, http.StatusForbidden, "Same-origin request required.")
-			return
-		}
 		for _, name := range requestedHeaders {
 			if !slices.Contains(option.CrossOriginRequestHeaders, name) {
 				writeError(writer, http.StatusForbidden, fmt.Sprintf("This route does not accept the %s header from other origins.", name))
@@ -58,13 +56,11 @@ func (router *Router) preflight(writer http.ResponseWriter, request *http.Reques
 		}
 		var allowed []string
 		for _, method := range routeMethods {
-			other, found := router.publicMount(request, method)
-			if !found || !other.CrossOrigin || !router.sessions.originAllowed(other, request) {
-				continue
-			}
-			allowed = append(allowed, method)
-			if method == http.MethodGet {
-				allowed = append(allowed, http.MethodHead)
+			if other, found := router.publicMount(request, method); found && other.CrossOrigin {
+				allowed = append(allowed, method)
+				if method == http.MethodGet {
+					allowed = append(allowed, http.MethodHead)
+				}
 			}
 		}
 		header.Set("Access-Control-Allow-Methods", strings.Join(allowed, ", "))
@@ -84,17 +80,9 @@ func (router *Router) preflight(writer http.ResponseWriter, request *http.Reques
 func (router *Router) publicMount(request *http.Request, method string) (PublicOptions, bool) {
 	probe := request.Clone(request.Context())
 	probe.Method = method
-	_, pattern := router.mux.Handler(probe)
-	router.publicMountsMutex.RLock()
-	defer router.publicMountsMutex.RUnlock()
-	option, found := router.publicMounts[pattern]
-	return option, found
-}
-
-// originAllowed reports whether a route's Origin policy lets request
-// through: SameOrigin only from the app's own pages, anything else always.
-func (s *Sessions) originAllowed(option PublicOptions, request *http.Request) bool {
-	return option.Origin != SameOrigin || s.sameOrigin(request)
+	handler, _ := router.mux.Handler(probe)
+	route, found := handler.(publicRoute)
+	return route.options, found
 }
 
 // parseRequestedHeaders reads Access-Control-Request-Headers, a
@@ -109,25 +97,10 @@ func parseRequestedHeaders(values []string) ([]string, bool) {
 	var names []string
 	for entry := range strings.SplitSeq(joined, ",") {
 		name := strings.Trim(entry, " \t")
-		if !validHeaderName(name) {
+		if !httpname.ValidHeaderName(name) {
 			return nil, false
 		}
 		names = append(names, textproto.CanonicalMIMEHeaderKey(name))
 	}
 	return names, true
-}
-
-// validHeaderName reports whether name is a non-empty HTTP header name: only
-// letters, digits, and the token punctuation RFC 9110 allows.
-func validHeaderName(name string) bool {
-	if name == "" {
-		return false
-	}
-	for _, character := range name {
-		isLetterOrDigit := character < 128 && (character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9')
-		if !isLetterOrDigit && !strings.ContainsRune("!#$%&'*+-.^_`|~", character) {
-			return false
-		}
-	}
-	return true
 }

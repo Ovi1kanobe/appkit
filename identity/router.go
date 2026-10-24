@@ -9,10 +9,10 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Ovi1kanobe/appkit/api"
+	"github.com/Ovi1kanobe/appkit/internal/httpname"
 )
 
 // Router is an application's one route table and its HTTP handler. Every
@@ -30,11 +30,6 @@ type Router struct {
 	clientAddress func(*http.Request) string
 	now           func() time.Time
 	rateLimitKeys int
-	// publicMounts holds each public route's options by its pattern, so the
-	// preflight interceptor knows which routes a page on another origin may
-	// call.
-	publicMountsMutex sync.RWMutex
-	publicMounts      map[string]PublicOptions
 }
 
 // RouterConfig configures the router. Every field is required, so what it
@@ -59,8 +54,8 @@ type PublicOptions struct {
 	Probe bool
 	// Origin says who may submit a write: SameOrigin, only the app's own
 	// pages, or AnyOrigin, a page on any site or a client that is no browser.
-	// A write without it panics at mount, and so does a GET with it, since it
-	// would do nothing.
+	// A write without it panics at mount, and so do a GET with it, since it
+	// would do nothing, and SameOrigin with CrossOrigin.
 	Origin OriginPolicy
 	// CrossOrigin lets a page on any origin call the route and read the
 	// response, with Access-Control-Allow-Origin: *, and answers its
@@ -69,7 +64,8 @@ type PublicOptions struct {
 	// CrossOriginRequestHeaders are the request headers a preflight may
 	// allow, matched case-insensitively; a JSON caller lists Content-Type.
 	// The list is copied at mount. It needs CrossOrigin, and a name that is
-	// not a header name panics at mount.
+	// not a header name, or Authorization, Cookie, or Proxy-Authorization,
+	// panics at mount.
 	CrossOriginRequestHeaders []string
 	// RateLimit caps how often one client address may call the route.
 	RateLimit RateLimit
@@ -81,15 +77,22 @@ type PublicOptions struct {
 type OriginPolicy int
 
 const (
-	_ OriginPolicy = iota // unset
+	// originPolicyUnset is the zero value: no policy named, which a write
+	// refuses at mount.
+	originPolicyUnset OriginPolicy = iota
 	// SameOrigin serves a write only from the app's own pages, with the
-	// same-origin check private mutations get, and answers any other origin
-	// 403.
+	// same-origin check private mutations get, and answers any other origin,
+	// and any client that is no browser, 403.
 	SameOrigin
 	// AnyOrigin serves a write from any origin, and from clients that are no
 	// browser, with no origin check.
 	AnyOrigin
 )
+
+// valid reports whether policy is SameOrigin or AnyOrigin.
+func (policy OriginPolicy) valid() bool {
+	return policy == SameOrigin || policy == AnyOrigin
+}
 
 // label names policy for the mount log: "same-origin", "any-origin", or ""
 // when unset.
@@ -105,10 +108,13 @@ func (policy OriginPolicy) label() string {
 
 // PublicSubject is the subject a public write records as its actor, such as
 // the author of a note a visitor posts; a public write handler builds its
-// system's actor with it, since it has no identity to read. No signed-in
-// person carries it, because a person's subject is Rauthy's own ID for them
-// and FromContext treats an empty subject as absent, so a rule comparing an
-// actor's subject with a record's never matches a public write.
+// system's actor with it, since it has no identity to read. A rule comparing
+// an actor's subject with a record's never matches a public write, because
+// no identity a handler sees carries it: Rauthy generates people's subjects,
+// assumed never to be "public", and authz.New refuses a policy whose client
+// list names "public", so the policy is the one place a collision could
+// enter and it is checked at startup. A client the policy does not list
+// holds no permissions and is refused 403 before any handler runs.
 const PublicSubject = "public"
 
 // PrivateOptions changes how Private serves one route. The zero value is
@@ -155,7 +161,7 @@ func (s *Sessions) Router(config RouterConfig) *Router {
 	if routed {
 		panic("identity: Sessions.Router called twice; mount every route on the one router")
 	}
-	router := &Router{sessions: s, mux: http.NewServeMux(), clientAddress: config.ClientAddress, now: time.Now, rateLimitKeys: rateLimitKeys, publicMounts: map[string]PublicOptions{}}
+	router := &Router{sessions: s, mux: http.NewServeMux(), clientAddress: config.ClientAddress, now: time.Now, rateLimitKeys: rateLimitKeys}
 	router.handler = api.LimitBodies(config.BodyLimit, router.mux)
 	s.routes(router.mux)
 	return router
@@ -221,22 +227,24 @@ func (router *Router) Service(pattern, permission string, handler http.Handler, 
 // records PublicSubject as its actor. A request with a Bearer credential
 // answers 400, since its caller meant another route, and so does a WebSocket
 // upgrade. The Host check stays unless options say Probe. A write names its
-// Origin in options, and SameOrigin refuses another origin with 403 after
-// the Host check. A RateLimit counts per client address, as
-// RouterConfig.ClientAddress reads it, and refuses an address over it before
-// the Host check. Each public route is logged once at mount, so the log
-// lists them.
+// Origin in options, and SameOrigin refuses another origin with 403 before
+// anything else, so a cross-site request spends no rate limit token. A
+// RateLimit counts per client address, as RouterConfig.ClientAddress reads
+// it, and refuses an address over it before the Host check. Each public
+// route is logged once at mount, so the log lists them.
 func (router *Router) Public(pattern string, handler http.Handler, options ...PublicOptions) {
 	method, path := checkRoute("Public", pattern, handler)
 	option := oneOption("Public", pattern, "PublicOptions", options)
 	write := slices.Contains(writeMethods, method)
 	switch {
-	case option.Origin != 0 && option.Origin.label() == "":
+	case option.Origin != originPolicyUnset && !option.Origin.valid():
 		panic(fmt.Sprintf("identity: router.Public(%q): Origin is identity.SameOrigin or identity.AnyOrigin", pattern))
-	case write && option.Origin == 0:
+	case write && option.Origin == originPolicyUnset:
 		panic(fmt.Sprintf("identity: router.Public(%q): a write names its Origin, identity.SameOrigin or identity.AnyOrigin", pattern))
-	case !write && option.Origin != 0:
-		panic(fmt.Sprintf("identity: router.Public(%q): Origin does nothing on a GET, which changes nothing; remove it", pattern))
+	case !write && option.Origin != originPolicyUnset:
+		panic(fmt.Sprintf("identity: router.Public(%q): Origin is for writes; a GET needs none, so remove it", pattern))
+	case option.Origin == SameOrigin && option.CrossOrigin:
+		panic(fmt.Sprintf("identity: router.Public(%q): a SameOrigin write refuses every other origin, so CrossOrigin would do nothing; use identity.AnyOrigin or remove CrossOrigin", pattern))
 	}
 	subtree := strings.HasSuffix(path, "/") || strings.HasSuffix(path, "...}")
 	if option.Probe && subtree {
@@ -247,31 +255,44 @@ func (router *Router) Public(pattern string, handler http.Handler, options ...Pu
 	}
 	requestHeaders := make([]string, 0, len(option.CrossOriginRequestHeaders))
 	for _, name := range option.CrossOriginRequestHeaders {
-		if !validHeaderName(name) {
+		if !httpname.ValidHeaderName(name) {
 			panic(fmt.Sprintf("identity: router.Public(%q): CrossOriginRequestHeaders has %q, which is not a header name", pattern, name))
 		}
-		requestHeaders = append(requestHeaders, textproto.CanonicalMIMEHeaderKey(name))
+		name = textproto.CanonicalMIMEHeaderKey(name)
+		if slices.Contains(credentialHeaders, name) {
+			panic(fmt.Sprintf("identity: router.Public(%q): CrossOriginRequestHeaders has %s, but a public route takes no credentials", pattern, name))
+		}
+		requestHeaders = append(requestHeaders, name)
 	}
 	option.CrossOriginRequestHeaders = requestHeaders
 	checkRateLimit("Public", pattern, option.RateLimit)
 	slog.Info("AppKit public route", "pattern", pattern, "subtree", subtree, "probe", option.Probe, "origin", option.Origin.label(), "cross_origin", option.CrossOrigin, "cross_origin_request_headers", requestHeaders, "rate_limit", option.RateLimit.label())
 	served := servePublic(handler, option)
-	if option.Origin == SameOrigin {
-		served = router.sessions.requireSameOrigin(served)
-	}
 	if !option.Probe {
 		served = router.sessions.boundary(served)
 	}
 	// Inside allowAnyOrigin, so a cross-origin page can read the 429 too.
 	served = router.rateLimited(option.RateLimit, router.clientAddress, served)
+	// Outside the rate limit, so a cross-site request spends no token.
+	if option.Origin == SameOrigin {
+		served = router.sessions.requireSameOrigin(served)
+	}
 	if option.CrossOrigin {
 		served = allowAnyOrigin(served)
 	}
-	router.mux.Handle(pattern, served)
-	router.publicMountsMutex.Lock()
-	router.publicMounts[pattern] = option
-	router.publicMountsMutex.Unlock()
+	router.mux.Handle(pattern, publicRoute{options: option, Handler: served})
 }
+
+// publicRoute is a public route's handler as mounted, carrying its options,
+// so the preflight interceptor finds a route's options in the route table.
+type publicRoute struct {
+	options PublicOptions
+	http.Handler
+}
+
+// credentialHeaders are the request headers that carry a credential, which a
+// public route never allows across origins.
+var credentialHeaders = []string{"Authorization", "Cookie", "Proxy-Authorization"}
 
 // requireSameOrigin serves a request only from the app's own pages, with the
 // check private mutations get, and answers any other 403.
