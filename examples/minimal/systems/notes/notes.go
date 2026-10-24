@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"embed"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -146,6 +147,7 @@ func (system *System) Create(ctx context.Context, actor Actor, requestID string,
 	if note.ID, err = result.LastInsertId(); err != nil {
 		return Note{}, err
 	}
+	slog.Info("note created", "subject", actor.Subject, "note", note.ID)
 	system.onChange(Change{ID: note.ID, Note: &note, At: note.CreatedAt, By: actor.Subject})
 	return note, nil
 }
@@ -169,6 +171,7 @@ func (system *System) Delete(ctx context.Context, actor Actor, id int64) error {
 	if removed, err := result.RowsAffected(); err != nil || removed == 0 {
 		return ErrNotFound
 	}
+	slog.Info("note deleted", "subject", actor.Subject, "note", id)
 	system.onChange(Change{ID: id, At: now.UTC().Truncate(time.Second), By: actor.Subject})
 	return nil
 }

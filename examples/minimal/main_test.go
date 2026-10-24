@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -35,6 +36,10 @@ import (
 // real routes, permissions, and ownership rules.
 func TestRoutes(t *testing.T) {
 	ctx := context.Background()
+	logged := &capturedLog{}
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(logged))
+	defer slog.SetDefault(previousLogger)
 	provider := identitytest.NewProvider(t)
 	app := httptest.NewServer(nil)
 	defer app.Close()
@@ -140,6 +145,9 @@ func TestRoutes(t *testing.T) {
 	noteChangesLock.Unlock()
 	if len(changes) != 2 || changes[0].Note == nil || changes[0].By != "alice" || changes[0].At.IsZero() || changes[1].Note != nil || changes[1].By != "alice" || changes[1].At.IsZero() {
 		t.Fatalf("note changes %+v, want alice's create and delete, dated", changes)
+	}
+	if lines := logged.matching("INFO note "); !slices.Equal(lines, []string{"INFO note created subject=alice note=1", "INFO note deleted subject=alice note=1"}) {
+		t.Fatalf("logged %q, want one line per note change with the subject and the note's id", lines)
 	}
 	// A create repeated with its request_id answers the note the first made, and makes no second.
 	firstStatus, firstBody := send(aliceCookie, "POST", "/api/notes", `{"text":"once","request_id":"create-once"}`)
@@ -315,4 +323,42 @@ func remoteClientAddress(t testing.TB) func(*http.Request) string {
 		t.Fatal(err)
 	}
 	return clientAddress
+}
+
+// capturedLog is a slog handler that keeps each record as its level, message,
+// and attributes on one line, so a test can check what a change logged.
+type capturedLog struct {
+	lock  sync.Mutex
+	lines []string
+}
+
+func (captured *capturedLog) Enabled(context.Context, slog.Level) bool { return true }
+
+func (captured *capturedLog) Handle(_ context.Context, record slog.Record) error {
+	line := record.Level.String() + " " + record.Message
+	record.Attrs(func(attribute slog.Attr) bool {
+		line += " " + attribute.String()
+		return true
+	})
+	captured.lock.Lock()
+	defer captured.lock.Unlock()
+	captured.lines = append(captured.lines, line)
+	return nil
+}
+
+func (captured *capturedLog) WithAttrs([]slog.Attr) slog.Handler { return captured }
+
+func (captured *capturedLog) WithGroup(string) slog.Handler { return captured }
+
+// matching returns the captured lines that start with prefix.
+func (captured *capturedLog) matching(prefix string) []string {
+	captured.lock.Lock()
+	defer captured.lock.Unlock()
+	var matched []string
+	for _, line := range captured.lines {
+		if strings.HasPrefix(line, prefix) {
+			matched = append(matched, line)
+		}
+	}
+	return matched
 }
