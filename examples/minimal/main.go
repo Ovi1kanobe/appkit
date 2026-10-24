@@ -116,7 +116,8 @@ func run(appKit config.AppKit) error {
 	if err != nil {
 		return err
 	}
-	diagnosticSystem := diagnostics.New()
+	diagnosticsPublisher := wsapi.NewDiagnosticsPublisher(hub)
+	diagnosticSystem := diagnostics.New(diagnosticsPublisher.Add)
 	files, err := fs.Sub(frontendFiles, "frontend/dist")
 	if err != nil {
 		return err
@@ -145,7 +146,12 @@ func run(appKit config.AppKit) error {
 	var background sync.WaitGroup
 	background.Go(func() { notesPublisher.Run(ctx) })
 	background.Go(func() { emailPublisher.Run(ctx) })
-	background.Go(func() { wsapi.PublishStatus(ctx, hub, diagnosticSystem) })
+	background.Go(func() { diagnosticsPublisher.Run(ctx) })
+	background.Go(func() {
+		if err := diagnosticSystem.Run(ctx); err != nil {
+			slog.Error("diagnostics stopped", "error", err)
+		}
+	})
 	serverErrors := make(chan error, 1)
 	go func() { serverErrors <- server.ListenAndServe() }()
 	slog.Info("listening", "address", address)

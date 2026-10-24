@@ -2,10 +2,12 @@ module github.com/Ovi1kanobe/appkit/examples/minimal
 
 go 1.26.0
 
-require github.com/Ovi1kanobe/appkit v0.0.0
+require (
+	github.com/Ovi1kanobe/appkit v0.0.0
+	github.com/coder/websocket v1.8.15
+)
 
 require (
-	github.com/coder/websocket v1.8.15 // indirect
 	github.com/coreos/go-oidc/v3 v3.21.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.6 // indirect

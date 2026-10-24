@@ -73,10 +73,12 @@ func TestPreview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	diagnosticSystem := diagnostics.New()
+	diagnosticsPublisher := wsapi.NewDiagnosticsPublisher(hub)
+	diagnosticSystem := diagnostics.New(diagnosticsPublisher.Add)
 	go notesPublisher.Run(ctx)
 	go emailPublisher.Run(ctx)
-	go wsapi.PublishStatus(ctx, hub, diagnosticSystem)
+	go diagnosticsPublisher.Run(ctx)
+	go func() { _ = diagnosticSystem.Run(ctx) }()
 	sessions, err := identity.NewSessions(ctx, identity.SessionConfig{
 		Issuer: provider.Issuer, ClientID: provider.ClientID, Origin: origin,
 		DatabasePath: filepath.Join(t.TempDir(), "sessions.sqlite"), Policy: policy, OnSessionRequest: recordProfile(profiles),
