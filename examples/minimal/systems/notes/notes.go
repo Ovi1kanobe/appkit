@@ -22,7 +22,9 @@ var (
 
 const maximumLength = 500
 
-// Actor is the person creating a note, recorded as its author by subject.
+// Actor is who creates a note, recorded as its author by subject: a person,
+// or the public subject the transport passes for a visitor who is not signed
+// in.
 type Actor struct{ Subject string }
 
 type Note struct {

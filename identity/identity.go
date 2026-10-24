@@ -44,10 +44,11 @@ func WithContext(ctx context.Context, actor Identity) context.Context {
 
 // FromContext returns the identity a private or service route attached, and
 // whether there is one. It panics on a public route's request, because a
-// public handler serves everyone the same and must never read who is asking.
+// public answer is independent of any identity and a public handler must
+// never read who is asking; a public write records PublicSubject instead.
 func FromContext(ctx context.Context) (Identity, bool) {
 	if ctx.Value(publicContextKey{}) != nil {
-		panic("identity: a public route's handler read the identity; public handlers serve everyone the same")
+		panic("identity: a public route's handler read the identity; a public answer is independent of any identity, and a public write records identity.PublicSubject")
 	}
 	actor, ok := ctx.Value(contextKey{}).(Identity)
 	actor.Groups = append([]string(nil), actor.Groups...)

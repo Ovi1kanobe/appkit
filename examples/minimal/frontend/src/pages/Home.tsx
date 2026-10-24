@@ -141,7 +141,8 @@ export function Home() {
                   <div className="min-w-0 flex-1">
                     <p className="break-words">{note.text}</p>
                     <p className="text-xs text-muted-foreground">
-                      {note.author_email} ·{" "}
+                      {/* A note a visitor posted through the public route has no author email. */}
+                      {note.author_email || "Anonymous"} ·{" "}
                       {new Date(note.created_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
                     </p>
                   </div>
