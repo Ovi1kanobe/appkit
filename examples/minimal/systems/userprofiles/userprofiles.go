@@ -39,10 +39,18 @@ func Open(ctx context.Context, database *sql.DB) (*System, error) {
 	return &System{database: database}, nil
 }
 
-// Record creates or refreshes the profile for subject.
-func (system *System) Record(ctx context.Context, subject, email string) error {
+// validSubject returns ErrInvalid when subject is empty or only space.
+func validSubject(subject string) error {
 	if strings.TrimSpace(subject) == "" {
 		return ErrInvalid
+	}
+	return nil
+}
+
+// Record creates or refreshes the profile for subject.
+func (system *System) Record(ctx context.Context, subject, email string) error {
+	if err := validSubject(subject); err != nil {
+		return err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := system.database.ExecContext(ctx,

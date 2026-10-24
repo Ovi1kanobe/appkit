@@ -78,15 +78,31 @@ func (system *System) List(ctx context.Context) ([]Note, error) {
 	return notes, rows.Err()
 }
 
-func (system *System) Create(ctx context.Context, actor Actor, text string) (Note, error) {
+// validText returns text without surrounding space, or ErrInvalid when
+// nothing is left or it is longer than maximumLength characters.
+func validText(text string) (string, error) {
 	text = strings.TrimSpace(text)
 	if text == "" || utf8.RuneCountInString(text) > maximumLength {
-		return Note{}, ErrInvalid
+		return "", ErrInvalid
 	}
-	note := Note{Text: text, CreatedBy: actor.Subject, CreatedAt: time.Now().UTC().Truncate(time.Second)}
+	return text, nil
+}
+
+// newNote is the note actor creates with text at now, which is stored to the
+// second. It has no ID until it is inserted.
+func newNote(actor Actor, text string, now time.Time) Note {
+	return Note{Text: text, CreatedBy: actor.Subject, CreatedAt: now.UTC().Truncate(time.Second)}
+}
+
+func (system *System) Create(ctx context.Context, actor Actor, text string) (Note, error) {
+	text, err := validText(text)
+	if err != nil {
+		return Note{}, err
+	}
+	note := newNote(actor, text, time.Now())
 	created := note.CreatedAt.Format(time.RFC3339)
 	result, err := system.database.ExecContext(ctx, `INSERT INTO notes (text, created_by, created_at, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)`,
-		note.Text, actor.Subject, created, actor.Subject, created)
+		note.Text, note.CreatedBy, created, note.CreatedBy, created)
 	if err != nil {
 		return Note{}, err
 	}
