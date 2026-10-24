@@ -103,11 +103,11 @@ func (system *System) SetAPIKey(ctx context.Context, actor Actor, apiKey string)
 	if err != nil {
 		return err
 	}
+	slog.Info("email key set", "subject", actor.Subject)
 	status, err := system.KeyStatus(ctx)
 	if err != nil {
 		return err
 	}
-	slog.Info("email key set", "subject", actor.Subject)
 	system.onChange(Change{Status: status, At: record.UpdatedAt, By: actor.Subject})
 	return nil
 }
