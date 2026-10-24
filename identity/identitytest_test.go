@@ -30,7 +30,7 @@ func TestIdentityTestHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sessions.Close()
-	router := sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit})
+	router := sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit, ClientAddress: mustClientAddress(t, "remote")})
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		actor, _ := identity.FromContext(r.Context())
 		_, _ = w.Write([]byte(actor.Subject))
@@ -97,7 +97,7 @@ func TestServiceClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer accountsSessions.Close()
-	router := accountsSessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit})
+	router := accountsSessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit, ClientAddress: mustClientAddress(t, "remote")})
 	router.Service("GET /api/profiles", "profiles.read", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		caller, _ := identity.FromContext(r.Context())
 		_, _ = w.Write([]byte(caller.Subject))

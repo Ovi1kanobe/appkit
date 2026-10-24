@@ -14,6 +14,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/Ovi1kanobe/appkit/config"
 	"github.com/Ovi1kanobe/appkit/encryption"
 	"github.com/Ovi1kanobe/appkit/examples/minimal/api/access"
 	httpapi "github.com/Ovi1kanobe/appkit/examples/minimal/api/http"
@@ -74,7 +75,7 @@ func TestRoutes(t *testing.T) {
 	}
 	hub := &realtime.Hub{}
 	defer hub.Close()
-	app.Config.Handler = routes(sessions, profiles, diagnostics.New(), noteSystem, emailSystem, hub, pages)
+	app.Config.Handler = routes(sessions, remoteClientAddress(t), profiles, diagnostics.New(), noteSystem, emailSystem, hub, pages)
 
 	alice := identitytest.User{Subject: "alice", Email: "alice@example.test", Groups: []string{memberGroup}}
 	aliceCookie := provider.SignIn(t, app.URL, alice)
@@ -209,4 +210,15 @@ func TestRoutes(t *testing.T) {
 			t.Fatalf("bearer %s: %d, want %d", step.name, response.StatusCode, step.status)
 		}
 	}
+}
+
+// remoteClientAddress is the CLIENT_ADDRESS rule tests and the preview use:
+// the connection's own address, since no proxy sits in front of them.
+func remoteClientAddress(t testing.TB) func(*http.Request) string {
+	t.Helper()
+	clientAddress, err := config.ParseClientAddress("remote", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return clientAddress
 }

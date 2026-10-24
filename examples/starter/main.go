@@ -115,7 +115,7 @@ func run(appKit config.AppKit) error {
 	address := app.ListenAddress
 	server := &http.Server{
 		Addr:              address,
-		Handler:           routes(sessions, pages),
+		Handler:           routes(sessions, appKit.ClientAddress, pages),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
@@ -153,8 +153,8 @@ func recordProfile(profiles *userprofiles.System) func(*http.Request, identity.I
 
 // routes mounts every route on the router, each line naming its kind and,
 // for a guarded kind, its permission. The frontend is the one public subtree.
-func routes(sessions *identity.Sessions, pages http.Handler) http.Handler {
-	router := sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit})
+func routes(sessions *identity.Sessions, clientAddress func(*http.Request) string, pages http.Handler) http.Handler {
+	router := sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit, ClientAddress: clientAddress})
 	router.Public(httpapi.HealthPattern, httpapi.Health(), identity.PublicOptions{Probe: true})
 	router.Public(httpapi.FrontendPattern, pages)
 	return router

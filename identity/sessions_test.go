@@ -105,7 +105,7 @@ func (f *sessionFixture) open() {
 		f.t.Fatal(err)
 	}
 	f.sessions = s
-	router := s.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit})
+	router := s.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit, ClientAddress: mustClientAddress(f.t, "remote")})
 	who := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a, _ := identity.FromContext(r.Context())
 		deadline, _ := r.Context().Deadline()

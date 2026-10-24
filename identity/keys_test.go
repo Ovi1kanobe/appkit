@@ -222,7 +222,7 @@ func TestIdentityTestKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sessions.Close()
-	router := sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit})
+	router := sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit, ClientAddress: mustClientAddress(t, "remote")})
 	router.Private("GET /api/diagnostics", "diagnostics.read", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	app.Config.Handler = router
 	cookie := provider.SignIn(t, app.URL, identitytest.User{Subject: "alice", Groups: []string{"observers"}})

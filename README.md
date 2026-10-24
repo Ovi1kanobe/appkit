@@ -22,6 +22,7 @@ Requires Go 1.26 or newer.
 
 Copy `examples/starter`, the empty app every app begins as.
 `examples/minimal` is a small complete app; fill in its `.env` from `.env.example` and run `make -C examples/minimal dev`.
+For development on localhost, `.env.example` sets `CLIENT_ADDRESS=remote`, since nothing sits in front of the app.
 
 Declare every environment variable through `config`, then call `Check` once so startup reports all missing or invalid values together.
 
@@ -39,6 +40,8 @@ if err := environment.Check(); err != nil {
 | `RAUTHY_CLIENT_ID` | yes | Rauthy client ID |
 | `RAUTHY_CLIENT_SECRET` | confidential clients | Rauthy client secret |
 | `APP_ORIGIN` | yes | Public origin users open, such as `https://app.example.com` or `http://localhost:8080` |
+| `CLIENT_ADDRESS` | yes | Where a request's client address comes from: `remote` for the connection's address, or `header:<Name>`, such as `header:X-Forwarded-For`, for the header the reverse proxy sets |
+| `TRUSTED_PROXIES` | with `header:` | Comma-separated addresses or CIDR ranges of the reverse proxies, such as `127.0.0.1,::1` or `10.0.1.0/24`; ignored with `remote` |
 | `APP_MASTER_KEY` | yes | Base64 key that encrypts stored credentials; create with `openssl rand -base64 32` |
 | `APP_ENV` | no, default `production` | `development` serves the frontend from disk and logs each default in use |
 | `LISTEN_ADDRESS` | no, default `127.0.0.1:8080` | Address the server listens on |
@@ -80,7 +83,7 @@ sessionConfig.Policy = policy // application-owned authz rules
 sessions, err := identity.NewSessions(ctx, sessionConfig)
 // Handle err at startup.
 defer sessions.Close()
-router := sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit}) // AppKit's /auth/ routes are already on it
+router := sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit, ClientAddress: appKit.ClientAddress}) // AppKit's /auth/ routes are already on it
 router.Private("GET /api/notes", "notes.read", listNotes)
 router.Private("GET /ws/status", "diagnostics.read", statusSocket)
 router.Service("GET /api/status", "diagnostics.read", status)
@@ -92,6 +95,7 @@ server := &http.Server{Handler: router /* and timeouts */}
 AppKit owns how routes are guarded, never which routes exist: the app's `routes` function mounts each one on the router, choosing its kind on its line.
 A pattern is a method from `GET`, `POST`, `PUT`, `PATCH`, and `DELETE`, one space, and a path with no host; a `GET` route also answers `HEAD`.
 Paths under `/auth/` belong to AppKit: the router refuses them, and Go refuses at mount a wildcard pattern that would overlap them.
+`RouterConfig.ClientAddress` is the rule `CLIENT_ADDRESS` sets, and nil panics, since the variable is required.
 A mount that breaks a rule, or a second `Sessions.Router` call, panics at startup with a message naming the line.
 A route that differs signed in and signed out is two routes on two paths.
 
@@ -106,8 +110,25 @@ API and WebSocket errors from AppKit use the same `{"error": "..."}` body as app
 Its handler sees no cookie, authorization, trailer, or URL userinfo, and `identity.FromContext` panics in it, because a public answer is the same for everyone.
 It may stream with `http.Flusher`, but cannot hijack the connection.
 A request to it with a `Bearer` credential answers 400, since the caller meant another route, and so does a WebSocket upgrade.
-The only options are `PublicOptions{Probe: true}`, which serves any Host and drops credentials silently, for one health path a load balancer reaches by address, and `CrossOrigin: true`, which adds `Access-Control-Allow-Origin: *`.
-Each public route is logged once at mount, so the log lists them.
+Its options are `PublicOptions{Probe: true}`, which serves any Host and drops credentials silently, for one health path a load balancer reaches by address, `CrossOrigin: true`, which adds `Access-Control-Allow-Origin: *` and exposes `Retry-After`, and `RateLimit`, below.
+Each public route is logged once at mount, with its rate limit, so the log lists them.
+
+`RateLimit` caps how often one caller may call a route, on any kind: `identity.PublicOptions{RateLimit: identity.RateLimit{Requests: 60, Per: time.Minute}}`, and likewise `PrivateOptions` and `ServiceOptions`, as the last argument.
+A public route counts per client address, and refuses one over the limit before the Host check.
+A private or service route counts per identity subject, after authentication and before the permission check, so a person's session and keys share one bucket and an application is limited by its client ID.
+An unauthenticated request to a private or service route answers 401 and is not counted; limiting unauthenticated traffic by address is the reverse proxy's job.
+Each caller has a token bucket in memory holding `Requests`, refilled continuously at `Requests` per `Per`.
+A route tracks at most 100,000 callers: idle ones are dropped, and when the table is still full the least recently seen is, so a flood of new addresses costs bounded memory and never refuses a new caller.
+Over the limit a request answers 429 with `{"error": "Too many requests; try again later."}` and `Retry-After` in whole seconds, and is not logged.
+The zero value means no limit; one field without the other, a negative one, or a second options value panics at mount.
+`CLIENT_ADDRESS` names where the address comes from, in exactly one of two forms.
+`remote` is the connection's address, for an app nothing sits in front of, such as one in development on localhost.
+`header:<Name>` is believed only from a connection whose address `TRUSTED_PROXIES` lists; any other connection is keyed by its own address.
+Its comma-separated entries are read from the right, skipping every trusted proxy, and the first other entry is the client, so `header:X-Forwarded-For` behind a chain of trusted proxies takes the address the outermost one saw, and a single-valued header such as `header:CF-Connecting-IP` works the same.
+Headers that cannot carry an address, such as `Host`, `Authorization`, or `Cookie`, fail at startup, and so does `Forwarded`, whose RFC 7239 format is not parsed.
+A request through a trusted proxy without the header is keyed by the proxy, so every such caller shares one bucket, and the first one logs a warning.
+Every address loses its port and IPv4 is unmapped from IPv6; an IPv6 address counts by its /64, since one network is one caller; a value that is not an address is used as is, cut to 64 bytes.
+Limits are per instance and per route, and reset when the app restarts.
 
 Every response, Go's own 404 and 405 included, carries `Cache-Control: no-store`, which a handler may replace, `Referrer-Policy: same-origin`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: frame-ancestors 'none'`, `X-Frame-Options: DENY`, and HSTS on an HTTPS origin.
 Bearer-only services without sessions or SQLite can use `identity.New` and `Verifier.Middleware`, whose identity carries no permissions; it is not for AppKit apps.
@@ -202,7 +223,7 @@ app := httptest.NewServer(nil) // its URL is the configured origin
 sessions, err := identity.NewSessions(ctx, identity.SessionConfig{
     Issuer: provider.Issuer, ClientID: provider.ClientID, Origin: app.URL, /* database, driver, policy */
 })
-app.Config.Handler = routes(sessions /* , systems */) // the router, then:
+app.Config.Handler = routes(sessions, clientAddress /* , systems */) // the router; clientAddress from config.ParseClientAddress("remote", ""), then:
 user := identitytest.User{Subject: "alice", Groups: []string{"observers"}}
 cookie := provider.SignIn(t, app.URL, user)  // session cookie for browser routes
 token := provider.AccessToken(t, user)       // Authorization: Bearer token for service routes
@@ -231,6 +252,7 @@ An app is one process listening on loopback behind a TLS reverse proxy, with `AP
 - **One instance:** the session database is exclusively locked, so a second process fails to start and every restart is a short outage.
 - **Rauthy at startup:** discovery runs at startup, so the application exits while Rauthy is unreachable; let the service manager restart it.
 - **Host header:** the proxy must pass the original `Host`, or AppKit answers 421; WebSocket upgrades also need the `Upgrade` and `Connection` headers.
+- **Client address:** set `CLIENT_ADDRESS` to the header the proxy sets, such as `header:X-Forwarded-For`, and `TRUSTED_PROXIES` to the proxy's addresses, such as `127.0.0.1,::1`; an existing app adds `CLIENT_ADDRESS` on upgrade, since startup fails without it, and `TRUSTED_PROXIES` too when it uses the header form.
 - **Event stream:** `/auth/events` is a long-lived response; disable proxy buffering for it (AppKit sends `X-Accel-Buffering: no`).
 - **Logs:** never log query strings for `/auth/callback`, because they contain one-time authorization codes.
 - **Secrets:** `RAUTHY_CLIENT_SECRET` and `APP_MASTER_KEY` are read from the environment and belong in a protected environment file, never in the repository.

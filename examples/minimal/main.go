@@ -138,7 +138,7 @@ func run(appKit config.AppKit) error {
 	address := app.ListenAddress
 	server := &http.Server{
 		Addr:              address,
-		Handler:           routes(sessions, profiles, diagnosticSystem, noteSystem, emailSystem, hub, pages),
+		Handler:           routes(sessions, appKit.ClientAddress, profiles, diagnosticSystem, noteSystem, emailSystem, hub, pages),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
@@ -178,10 +178,10 @@ func recordProfile(profiles *userprofiles.System) func(*http.Request, identity.I
 
 // routes mounts every route on the router, each line naming its kind and,
 // for a guarded kind, its permission. The frontend is the one public subtree.
-func routes(sessions *identity.Sessions, profiles *userprofiles.System, diagnosticSystem *diagnostics.System, noteSystem *notes.System, emailSystem *email.System, hub *realtime.Hub, pages http.Handler) http.Handler {
-	router := sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit})
+func routes(sessions *identity.Sessions, clientAddress func(*http.Request) string, profiles *userprofiles.System, diagnosticSystem *diagnostics.System, noteSystem *notes.System, emailSystem *email.System, hub *realtime.Hub, pages http.Handler) http.Handler {
+	router := sessions.Router(identity.RouterConfig{BodyLimit: api.DefaultBodyLimit, ClientAddress: clientAddress})
 	router.Public(httpapi.HealthPattern, httpapi.Health(), identity.PublicOptions{Probe: true})
-	router.Public(httpapi.PublicNotesPattern, httpapi.PublicNotes(noteSystem))
+	router.Public(httpapi.PublicNotesPattern, httpapi.PublicNotes(noteSystem), identity.PublicOptions{RateLimit: identity.RateLimit{Requests: 60, Per: time.Minute}})
 	router.Service(httpapi.StatusPattern, access.DiagnosticsRead, httpapi.Status(diagnosticSystem))
 	router.Private(httpapi.ListNotesPattern, access.NotesRead, httpapi.ListNotes(noteSystem, profiles))
 	router.Private(httpapi.CreateNotePattern, access.NotesWrite, httpapi.CreateNote(noteSystem, profiles))
