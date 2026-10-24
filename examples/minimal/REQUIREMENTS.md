@@ -49,9 +49,9 @@ An admin enters the email provider's API key once on Settings and sees that it i
 - FR-006: A visitor who is not signed in must be able to add a note of 1 to 500 characters from a page on any origin, at most 5 a minute per address.
 
 ## Key entities
-- Note: text, author by subject, created time; belongs to one person; a note a visitor posted belongs to the public subject, and no member may delete it.
-- Profile: a signed-in person's subject and email, recorded at every session request.
-- Email settings: one row holding the encrypted API key.
+- Note: text, author by subject, created time; belongs to one person; a note a visitor posted belongs to the public subject, and no member may delete it; history kept: no, because a note is never edited, only added and removed, and nobody needs a removed note back.
+- Profile: a signed-in person's subject and email, recorded at every session request; history kept: no, because it mirrors the identity provider's current email, which keeps its own history.
+- Email settings: one row holding the encrypted API key; history kept: no, because only the current key is ever used, and a replaced key must not be kept.
 
 ## Success criteria
 - SC-001: Every rule in APPS.md has at least one line of this app that shows it.
