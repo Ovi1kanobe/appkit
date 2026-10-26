@@ -1,8 +1,10 @@
 // One live WebSocket per page. Close code 4401 means the session ended, so it
 // refreshes sign-in state instead of reconnecting; any other close reconnects,
-// waiting twice as long after each failure up to a limit. The server's first
-// message, {"ready":true}, means the socket is subscribed: only then is it live
-// and onConnect runs, so the page refetches what it missed and misses nothing after.
+// waiting twice as long after each failure up to a limit. The server's message
+// {"ready":true} means the socket is subscribed: only then is it live and
+// onConnect runs, so the page refetches what it missed and misses nothing after.
+// A change can arrive before it, handed to onMessage like any other, so a
+// handler works before its data is loaded and the refetch replaces what it made.
 import { useEffect, useRef, useState } from "react"
 
 import { refreshSession } from "@/lib/session"

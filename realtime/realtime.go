@@ -21,9 +21,11 @@ var errUnauthenticated = errors.New("realtime: unauthenticated")
 // it apart from a network drop.
 const AuthenticationEnded = 4401
 
-// Ready is the first message a subscribed socket receives: from then on it
-// misses no change on its topics, so a page refetches when Ready arrives rather
-// than when the socket opens, and a test publishes only after reading it.
+// Ready is sent once a socket is subscribed: from then on it misses no change
+// on its topics, so a page refetches when Ready arrives rather than when the
+// socket opens, and a test publishes only after reading it. A change published
+// between the subscription and this write arrives before Ready, so a page's
+// handler works before its data is loaded and the refetch replaces what it made.
 const Ready = `{"ready":true}`
 
 // View says what one person receives, or false to send them nothing. The
