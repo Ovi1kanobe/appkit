@@ -95,6 +95,19 @@ func (policy *Policy) Delegable() []string {
 	return permissions
 }
 
+// Grants reports whether some role grants permission, so a setting that names
+// a permission can be checked at startup.
+func (policy *Policy) Grants(permission string) bool {
+	for _, permissions := range policy.roles {
+		for _, granted := range permissions {
+			if granted == permission {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Actor is a permission snapshot. Its zero value grants nothing.
 type Actor struct {
 	roles       []string

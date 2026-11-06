@@ -211,6 +211,60 @@ func TestKeysNotIssued(t *testing.T) {
 	status(t, f.request("GET", "/auth/users/alice/keys", cookie, nil, ""), 404)
 }
 
+// TestKeyCreatePermission checks an app that names who makes keys: only a
+// holder of the permission is offered delegable permissions and makes keys,
+// and a key stops working once its holder loses it. TestKeys covers the app
+// that leaves it unset.
+func TestKeyCreatePermission(t *testing.T) {
+	f := newSessionFixture(t, 0, "")
+	f.sessions.Close()
+	roles := map[string][]string{"observer": {"diagnostics.read", "notes.write"}, "key maker": {"keys.create"}}
+	groups := map[string][]string{"observers": {"observer"}, "key makers": {"key maker"}}
+	f.config.Policy, _ = authz.New(roles, groups, nil, []string{"diagnostics.read"})
+	signIn := func(sid string, groups ...string) *http.Cookie {
+		return f.finish(f.begin(sid, func(c map[string]any) { c["groups"] = groups })).Cookies()[1]
+	}
+	valid := `{"name":"ci","scopes":["diagnostics.read"],"lifetime_seconds":3600}`
+
+	// Setup refuses a permission no role grants, and one a key could carry.
+	for _, permission := range []string{"keys.unknown", "diagnostics.read"} {
+		f.config.KeyCreatePermission = permission
+		if _, err := identity.NewSessions(context.Background(), f.config); err == nil {
+			t.Fatalf("key creation permission %q accepted", permission)
+		}
+	}
+	f.config.KeyCreatePermission = "keys.create"
+	f.open()
+
+	// Without the permission, a person is offered nothing to delegate and refused a key.
+	observer := signIn("observer", "observers")
+	if body := status(t, f.request("GET", "/auth/session", observer, nil, ""), 200); strings.Contains(body, "keys") {
+		t.Fatalf("keys offered: %s", body)
+	}
+	f.createKey(observer, valid, 403)
+
+	// With it, they make a key limited to the delegable permissions they hold.
+	maker := signIn("maker", "observers", "key makers")
+	if body := status(t, f.request("GET", "/auth/session", maker, nil, ""), 200); !strings.Contains(body, `"keys":{"delegable":["diagnostics.read"]`) {
+		t.Fatalf("session keys: %s", body)
+	}
+	f.createKey(maker, `{"name":"ci","scopes":["notes.write"],"lifetime_seconds":3600}`, 400)
+	made := f.createKey(maker, valid, 201)
+	if strings.Join(made.Key.Permissions, ",") != "diagnostics.read" {
+		t.Fatalf("created key %+v", made)
+	}
+	bearer := map[string]string{"Authorization": "Bearer " + made.Secret}
+	status(t, f.request("GET", "/diagnostics", nil, bearer, ""), 200)
+
+	// Losing the permission refuses the key, which stays listed with no permissions to revoke.
+	signIn("lost", "observers")
+	status(t, f.request("GET", "/diagnostics", nil, bearer, ""), 401)
+	if body := status(t, f.request("GET", "/auth/keys", observer, nil, ""), 200); !strings.Contains(body, `"id":"`+made.Key.ID+`"`) || !strings.Contains(body, `"permissions":[]`) {
+		t.Fatalf("listed keys: %s", body)
+	}
+	status(t, f.request("DELETE", "/auth/keys/"+made.Key.ID, observer, map[string]string{"Origin": f.app.URL}, ""), 204)
+}
+
 // TestIdentityTestKey is how an application tests a route a key may call.
 func TestIdentityTestKey(t *testing.T) {
 	provider := identitytest.NewProvider(t)

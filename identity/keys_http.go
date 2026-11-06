@@ -22,7 +22,7 @@ type keyView struct {
 }
 
 func (s *Sessions) viewKey(record keyRecord) keyView {
-	view := keyView{ID: record.id, Name: record.name, Scopes: record.scopes, Permissions: s.config.Policy.ResolveKey(record.Groups, record.scopes).Permissions(), CreatedAt: record.created.UTC(), ExpiresAt: record.expires.UTC()}
+	view := keyView{ID: record.id, Name: record.name, Scopes: record.scopes, Permissions: s.keyPermissions(record.Groups, record.scopes), CreatedAt: record.created.UTC(), ExpiresAt: record.expires.UTC()}
 	if !record.used.IsZero() {
 		used := record.used.UTC()
 		view.LastUsedAt = &used

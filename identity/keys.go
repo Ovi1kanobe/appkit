@@ -38,6 +38,7 @@ const (
 var (
 	errUnknownKey    = errors.New("identity: unknown key")
 	errKeysNotIssued = api.Invalid("This application does not issue keys.")
+	errKeysForbidden = api.Forbidden("You may not make keys.")
 )
 
 // keyRecord is one row of appkit_keys. Identity is the holder as of their last
@@ -122,7 +123,7 @@ func (s *Sessions) admitKey(w http.ResponseWriter, r *http.Request, next http.Ha
 		return
 	}
 	now := time.Now()
-	permissions := s.config.Policy.ResolveKey(record.Groups, record.scopes).Permissions()
+	permissions := s.keyPermissions(record.Groups, record.scopes)
 	reason := ""
 	switch {
 	case !record.revoked.IsZero():
@@ -185,15 +186,36 @@ func (s *Sessions) stampKey(id string, now time.Time, warn bool) bool {
 	return true
 }
 
+// mayCreateKeys reports whether a person with these groups may make keys:
+// always when the app sets no key creation permission, else while the policy
+// grants it to them.
+func (s *Sessions) mayCreateKeys(groups []string) bool {
+	return s.config.KeyCreatePermission == "" || s.config.Policy.Resolve(groups).Can(s.config.KeyCreatePermission)
+}
+
+// keyPermissions returns what a key with these scopes gets while its holder
+// has these groups: what the policy resolves for it, or nothing once the
+// holder may no longer make keys.
+func (s *Sessions) keyPermissions(groups, scopes []string) []string {
+	if !s.mayCreateKeys(groups) {
+		return []string{}
+	}
+	return s.config.Policy.ResolveKey(groups, scopes).Permissions()
+}
+
 // delegableFor returns the permissions a person may give a key: the delegable
-// ones the policy grants their groups. The same expression gates creation.
+// ones the policy grants their groups, or none when they may not make keys.
+// The same expression gates creation.
 func (s *Sessions) delegableFor(person Identity) []string {
-	return s.config.Policy.ResolveKey(person.Groups, s.config.Policy.Delegable()).Permissions()
+	return s.keyPermissions(person.Groups, s.config.Policy.Delegable())
 }
 
 // createKey makes a key for person and returns its record and the secret, the
 // only time the secret exists in the clear. Called with s.mu held.
 func (s *Sessions) createKey(ctx context.Context, person Identity, name string, scopes []string, lifetimeSeconds int64) (keyRecord, string, error) {
+	if !s.mayCreateKeys(person.Groups) {
+		return keyRecord{}, "", errKeysForbidden
+	}
 	delegable := s.delegableFor(person)
 	if len(delegable) == 0 {
 		return keyRecord{}, "", errKeysNotIssued
@@ -322,8 +344,8 @@ func (s *Sessions) refreshKeys(ctx context.Context, person Identity) error {
 		return err
 	}
 	for _, record := range records {
-		before := s.config.Policy.ResolveKey(record.Groups, record.scopes).Permissions()
-		after := s.config.Policy.ResolveKey(person.Groups, record.scopes).Permissions()
+		before := s.keyPermissions(record.Groups, record.scopes)
+		after := s.keyPermissions(person.Groups, record.scopes)
 		if !slices.Equal(before, after) {
 			s.cancelSession(record.hash)
 		}

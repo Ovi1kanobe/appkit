@@ -220,6 +220,7 @@ AppKit owns `/auth/keys`: a person lists, makes, and revokes their own keys from
 `GET /auth/keys` answers `{"keys": [{id, name, scopes, permissions, created_at, expires_at, last_used_at, revoked_at}]}`, newest first, where `permissions` is what the key gets now; `POST /auth/keys` takes `{name, scopes, lifetime_seconds}` and answers 201 with `{key, secret}`, the only time the secret is shown; `DELETE /auth/keys/{id}` answers 204 whether or not the key was live.
 `/auth/session` for a key answers `user` with `key_id`, the key's `permissions`, and `key: {name, scopes, expires_at}`, and `OnSessionRequest` does not run; for a browser it adds `keys: {delegable, max_lifetime_seconds}` when the person may give a key something.
 With `SessionConfig.KeyAdminPermission` set, `GET /auth/users/{subject}/keys` lists any person's keys, and `DELETE` on that path or on `/{id}` under it revokes all or one, behind that permission, so an admin page can end a disabled person's keys.
+With `SessionConfig.KeyCreatePermission` set, only a person holding that permission makes keys, limited as ever to the delegable permissions they hold; anyone else is offered nothing to delegate and answered 403, and a key whose holder no longer holds it gets no permissions; some role must grant it, and it must not be delegable.
 Every app keeps the starter's Account page at `/account`, where a person manages their keys.
 Revocation and expiry cancel live requests and sockets like a session's end; a tool that sees close code `4401` or `signed-out` reads `/auth/session` again and reconnects, since the key may have been narrowed rather than ended.
 Removing a person from the app's groups, or disabling them in Rauthy, does not end their keys: they are narrowed at the next sign-in, which a disabled account never makes, and die at expiry, so revoke them from the Account page or the admin route.
@@ -332,7 +333,7 @@ if viewer.Can("bots.write") { /* viewer is the identity.Identity from the reques
 
 Multiple groups/roles union permissions; unknown groups and unlisted clients grant nothing; roles and permissions are returned in sorted order.
 `policy.Resolve(groups, localRoles...)` returns an `authz.Actor` directly, and also accepts trusted application-owned role assignments, never unvalidated request values.
-`policy.ResolveKey(groups, scopes)` returns what a personal key gets: its scopes, kept only where delegable and granted to the holder's groups; `policy.Delegable()` lists the delegable permissions.
+`policy.ResolveKey(groups, scopes)` returns what a personal key gets: its scopes, kept only where delegable and granted to the holder's groups; `policy.Delegable()` lists the delegable permissions; `policy.Grants(permission)` reports whether some role grants it.
 Permissions say what a role may do; the application's own resource rules decide which records that applies to.
 Rauthy groups are shared by every application, so start each group name with the application name (`notes-admins`, `billing-admins`).
 

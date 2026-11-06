@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,13 @@ type SessionConfig struct {
 	// it, so a page may list and revoke another person's keys. Unset, the
 	// routes are not served.
 	KeyAdminPermission string
+	// KeyCreatePermission, when set, is the permission a person needs to make
+	// keys, so an app chooses who makes keys apart from what keys may carry.
+	// A person without it is offered nothing to delegate and is refused key
+	// creation, and their keys get no permissions until they hold it again.
+	// Some role must grant it, and it must not be delegable, since a key never
+	// makes keys. Unset, anyone holding a delegable permission makes keys.
+	KeyCreatePermission string
 	// OnSessionRequest, when set, runs on each signed-in /auth/session request, which
 	// every page makes as it loads, so the app can record that the person is here.
 	// What it returns is sent as "app", so pages load per-person state in the same
@@ -104,6 +112,9 @@ func NewSessions(ctx context.Context, config SessionConfig) (*Sessions, error) {
 	}
 	if config.KeyLifetime < time.Second || config.KeyLifetime > longestKeyLife {
 		return nil, errors.New("identity: key lifetime must be between one second and ninety days")
+	}
+	if config.KeyCreatePermission != "" && (!config.Policy.Grants(config.KeyCreatePermission) || slices.Contains(config.Policy.Delegable(), config.KeyCreatePermission)) {
+		return nil, fmt.Errorf("identity: key creation permission %q must be granted by some role and must not be delegable", config.KeyCreatePermission)
 	}
 	if config.DatabasePath == "" || strings.ContainsAny(config.DatabasePath, "?\x00") || strings.HasPrefix(config.DatabasePath, "file:") || config.DatabasePath == ":memory:" {
 		return nil, errors.New("identity: a dedicated session database file is required")

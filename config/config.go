@@ -110,7 +110,7 @@ func (settings AppSettings) Development() bool { return settings.Environment == 
 // AppKit holds every value AppKit reads from the environment.
 type AppKit struct {
 	App       AppSettings
-	Sessions  identity.SessionConfig // the application still sets Policy, and may set KeyLifetime and KeyAdminPermission
+	Sessions  identity.SessionConfig // the application still sets Policy, and may set KeyLifetime, KeyAdminPermission, and KeyCreatePermission
 	MasterKey *encryption.Key        // nil when APP_MASTER_KEY is missing or invalid; Check reports why
 	// ClientAddress returns the address a request came from, for
 	// identity.RouterConfig; nil when CLIENT_ADDRESS is missing or invalid,
